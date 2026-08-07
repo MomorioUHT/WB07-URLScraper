@@ -203,15 +203,17 @@ def process_due_schedules(
     facebook_url: str, 
     youtube_url: str,
     master_results: Dict[str, Dict],
-    delay_minutes: int = 3,
+    delay_minutes: int = 4,
     csv_filename: str = "live_results.csv",
     max_retry_minutes: int = 25
 ) -> Tuple[List[Dict], List[Dict]]:
     """
     ตรวจสอบเงื่อนไขเวลาในลักษณะ Sliding Queue:
-    - แบ่งรายการตามเวลาออกอากาศ + Delay 3 นาที
+    - แบ่งรายการตามเวลาออกอากาศ + Delay 4 นาที
     - รายการในอดีต (ถอยไป 1 รายการ): ตรวจสอบเฉพาะรายการล่าสุดที่ถึงเวลา (หน้า Queue ตัวเดียว) 
-      หากยังไม่มีลิงก์ครบ จะทำการ Crawl หน้า Facebook และ YouTube Live Streams
+      1. หากมีข้อมูล URL บางส่วนหรือครบแล้ว -> ถือว่าค้นหาไปแล้ว ให้ Skip ไปรายการถัดไปทันที
+      2. หากค้นหาแล้วไม่พบอะไรเลยทั้ง 2 platform (attempts >= 1) -> ให้เลิกทำ และข้ามไปรอรายการถัดไปทันที
+      3. หากยังไม่เคยค้นหา (attempts == 0) -> ทำการ Crawl ค้นหาเพียงรอบเดียว
     - รายการในอนาคต (ไปหน้า 1 รายการ): รอเวลาและแสดงเวลานับถอยหลัง
     
     คืนค่า (updated_items, upcoming_items)
@@ -252,10 +254,18 @@ def process_due_schedules(
             })
             fb_url = existing_res.get("facebook_url", "NOT FOUND")
             yt_url = existing_res.get("youtube_url", "NOT FOUND")
+            attempts = existing_res.get("attempts", 0)
             
-            # หากยังไม่เจอครบทั้ง 2 ลิงก์ ให้ค้นหา
-            if fb_url == "NOT FOUND" or yt_url == "NOT FOUND":
-                due_items_to_search.append(cand)
+            # เงื่อนไขข้อ 2: มีข้อมูล url บางส่วน (หรือครบ) ให้ถือว่าค้นหาไปแล้ว และ Skip ทันที
+            if (fb_url and fb_url != "NOT FOUND") or (yt_url and yt_url != "NOT FOUND"):
+                continue
+                
+            # เงื่อนไขข้อ 3: เมื่อค้นหาแล้วไม่พบอะไรเลยทั้ง 2 platform (attempts >= 1) ให้เลิกทำ และข้ามไปรอรายการถัดไป
+            if attempts >= 1:
+                continue
+                
+            # หากยังไม่เคยค้นหา (attempts == 0) และยังไม่มี URL ใดๆ ให้ค้นหา
+            due_items_to_search.append(cand)
 
     # แสดงสถานะคิวรอบเวลาปัจจุบัน (ถอยไป 1, ไปหน้า 1)
     print(f"\n" + "-"*70)
@@ -265,11 +275,24 @@ def process_due_schedules(
         res = master_results.get(k, {})
         fb = res.get("facebook_url", "NOT FOUND")
         yt = res.get("youtube_url", "NOT FOUND")
-        status_str = "✅ มีลิงก์ครบแล้ว (FB & YT)" if (fb != "NOT FOUND" and yt != "NOT FOUND") else ("⚠️ มีลิงก์บางส่วน" if (fb != "NOT FOUND" or yt != "NOT FOUND") else "❌ ยังไม่พบลิงก์")
+        attempts = res.get("attempts", 0)
+        
+        has_fb = (fb and fb != "NOT FOUND")
+        has_yt = (yt and yt != "NOT FOUND")
+        
+        if has_fb and has_yt:
+            status_str = "✅ มีลิงก์ครบแล้ว (FB & YT) -> ข้ามไปรายการถัดไป"
+        elif has_fb or has_yt:
+            status_str = "⚠️ มีข้อมูลลิงก์บางส่วน -> ถือว่าค้นหาแล้ว และข้ามไปรายการถัดไป"
+        elif attempts >= 1:
+            status_str = "❌ ค้นหาแล้วไม่พบลิงก์ทั้ง 2 แพลตฟอร์ม -> เลิกทำ และข้ามไปรอรายการถัดไป"
+        else:
+            status_str = "🔥 ถึงเวลาค้นหา (กำลังจะเริ่มค้นหา)"
+            
         print(f"📍 [Queue: ถอยไป 1 รายการ] แถว {latest_item['row']}: '{latest_item['title']}' ({latest_item['date']} {latest_item['time']}) -> {status_str}")
-        if fb != "NOT FOUND":
+        if has_fb:
             print(f"   • Facebook : {fb}")
-        if yt != "NOT FOUND":
+        if has_yt:
             print(f"   • YouTube  : {yt}")
     else:
         print("📍 [Queue: ถอยไป 1 รายการ] ไม่มีรายการในอดีต")
@@ -404,13 +427,13 @@ def start_live_scheduler(
     facebook_url: str = "https://www.facebook.com/watch/ThaiPBS/", 
     youtube_url: str = "https://www.youtube.com/@ThaiPBS/streams",
     check_interval_seconds: int = 30,
-    delay_minutes: int = 3,
+    delay_minutes: int = 4,
     csv_filename: str = "live_results.csv"
 ):
     """
     Loop ตรวจสอบสถานะอัตโนมัติ รันทิ้งไว้ต่อเนื่องจนกว่าผู้ใช้จะกด Ctrl + C
     - ตรวจสอบเวลา System Time เทียบกับตารางเวลาใน Google Sheets
-    - เมื่อเวลาปัจจุบันเกินเวลาออกอากาศ + 3 นาที จะดึงรายการใหม่มา Crawl ค้นหา
+    - เมื่อเวลาปัจจุบันเกินเวลาออกอากาศ + 4 นาที จะดึงรายการใหม่มา Crawl ค้นหา
     - อัปเดตผลลัพธ์ลง CSV อัตโนมัติแบบ Real-time
     """
     print("=" * 80)
@@ -510,7 +533,7 @@ if __name__ == "__main__":
     YOUTUBE_STREAMS_URL = os.getenv("YOUTUBE_STREAMS_URL", "https://www.youtube.com/@ThaiPBS/streams")
     CSV_OUTPUT_FILE = os.getenv("CSV_OUTPUT_FILE", "live_results.csv")
     CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "30"))
-    DELAY_MINUTES = int(os.getenv("DELAY_MINUTES", "3"))
+    DELAY_MINUTES = int(os.getenv("DELAY_MINUTES", "4"))
     
     # รันระบบ Scheduler แบบต่อเนื่องจนกว่าจะกด Ctrl + C
     start_live_scheduler(
