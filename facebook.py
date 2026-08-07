@@ -134,25 +134,6 @@ def dismiss_login_popup(driver: webdriver.Chrome):
         pass
 
 
-def take_screenshot(driver: webdriver.Chrome, prefix: str = "facebook_live") -> str:
-    """
-    บันทึกภาพหน้าจอ (Screenshot) ลงในโฟลเดอร์ screenshots
-    """
-    screenshot_dir = os.path.join(os.getcwd(), "screenshots")
-    os.makedirs(screenshot_dir, exist_ok=True)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{prefix}_{timestamp}.png"
-    filepath = os.path.join(screenshot_dir, filename)
-    
-    driver.save_screenshot(filepath)
-    latest_path = os.path.join(screenshot_dir, f"{prefix}_latest.png")
-    driver.save_screenshot(latest_path)
-    
-    print(f"[Screenshot] บันทึกภาพหน้าจอไว้ที่: {filepath}")
-    return filepath
-
-
 def clean_facebook_url(url: str) -> str:
     """
     จัดรูปแบบ URL วิดีโอ Facebook ให้สะอาดและเป็นมาตรฐาน
@@ -224,7 +205,6 @@ def scrape_live_videos(page_url: str = "https://www.facebook.com/watch/ThaiPBS/"
         print(f"[Facebook Crawler] รอให้หน้าเว็บโหลดเนื้อหา ({load_wait_seconds} วินาที)...")
         time.sleep(load_wait_seconds)
         dismiss_login_popup(driver)
-        take_screenshot(driver, prefix="01_page_loaded")
         
         # 2. เลื่อนหน้าจอลงเพื่อโหลดวิดีโอใน Grid แบบ Deep Scroll
         for i in range(max_scrolls):
@@ -245,8 +225,6 @@ def scrape_live_videos(page_url: str = "https://www.facebook.com/watch/ThaiPBS/"
             """)
             time.sleep(1.0)
             dismiss_login_popup(driver)
-            
-        take_screenshot(driver, prefix="02_after_scroll")
         
         # 3. ดึงข้อมูลวิดีโอทั้งหมดจาก Grid/Feed บนหน้า Watch
         extracted_data = driver.execute_script("""
@@ -321,11 +299,6 @@ def scrape_live_videos(page_url: str = "https://www.facebook.com/watch/ThaiPBS/"
                 continue
 
         videos = list(video_dict.values())
-        print(f"\n[Facebook Crawler] ดึงรายการวิดีโอจากหน้าเว็บได้ทั้งหมด {len(videos)} รายการ:")
-        for idx, v in enumerate(videos, start=1):
-            title_preview = v['title'][:80]
-            print(f"  {idx}. {title_preview}... -> {v['url']}")
-            
         return videos
         
     finally:

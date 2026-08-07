@@ -197,10 +197,6 @@ def scrape_youtube_streams(
                 }
                 
         videos = list(video_dict.values())
-        print(f"\n[YouTube Crawler] ดึงรายการ Live Streams จาก YouTube ได้ทั้งหมด {len(videos)} รายการ:")
-        for idx, v in enumerate(videos, start=1):
-            print(f"  {idx}. {v['title']} -> {v['url']}")
-            
         return videos
         
     finally:
