@@ -1,12 +1,9 @@
 import csv
-import io
 import os
-import re
 import sys
 import time
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
-import requests
 from dotenv import load_dotenv
 
 # รองรับการแสดงผลภาษาไทยบน Windows Terminal
@@ -16,10 +13,15 @@ if sys.stdout.encoding != 'utf-8':
     except Exception:
         pass
 
-# นำเข้าฟังก์ชันจาก modules/facebook.py, modules/youtube.py และ modules/x.py
+# นำเข้าฟังก์ชันจาก modules/facebook.py, modules/youtube.py, modules/x.py และ modules/sheets_writer.py
 from modules.facebook import scrape_live_videos, find_matching_video
 from modules.youtube import scrape_youtube_streams, find_matching_youtube_video
 from modules.x import scrape_x_live_videos, find_matching_x_video
+from modules.sheets_writer import (
+    NOT_FOUND_DISPLAY,
+    fetch_schedule_rows,
+    write_row_result,
+)
 
 load_dotenv(override=True)
 
@@ -71,49 +73,36 @@ def parse_schedule_datetime(date_str: str, time_str: str) -> Optional[datetime]:
         return None
 
 
-def fetch_sheet_schedule(sheet_id: str, gid: str, start_row: int = 6) -> List[Dict]:
+def fetch_sheet_schedule(api_url: str, token: Optional[str] = None) -> List[Dict]:
     """
     ดึงข้อมูลตารางเวลาและรายการ (A: วันที่, B: เวลา, C: ชื่อรายการ)
-    ตั้งแต่แถว start_row (ค่าเริ่มต้นคือแถว 6: A6:C) ผ่าน Google Sheets CSV Export API
+    ผ่าน Google Apps Script Web App (แทนที่การ export CSV ตรงๆ ด้วย SHEET_ID/GID)
     """
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
-    print(f"[Google Sheet] กำลังดึงข้อมูลจาก: {url}")
+    print(f"[Apps Script API] กำลังดึงข้อมูลตารางจาก: {api_url}")
 
-    response = requests.get(url)
-    response.raise_for_status()
-
-    # กำหนด encoding เป็น utf-8
-    response.encoding = 'utf-8'
-    csv_content = io.StringIO(response.text)
-    reader = csv.reader(csv_content)
+    rows = fetch_schedule_rows(api_url=api_url, token=token)
 
     schedule_list = []
+    for row in rows:
+        date_val = str(row.get("date", "")).strip()
+        time_val = str(row.get("time", "")).strip()
+        title_val = str(row.get("title", "")).strip()
 
-    for row_idx, row in enumerate(reader, start=1):
-        if row_idx < start_row:
+        # ข้ามแถวที่ไม่มีชื่อรายการ (Column C)
+        if not title_val:
             continue
 
-        # ตรวจสอบว่าแถวนั้นมีข้อมูลอย่างน้อยในคอลัมน์ A, B, C หรือไม่
-        if len(row) >= 3:
-            date_val = row[0].strip()
-            time_val = row[1].strip()
-            title_val = row[2].strip()
+        sched_dt = parse_schedule_datetime(date_val, time_val)
 
-            # ข้ามแถวที่ไม่มีชื่อรายการ (Column C)
-            if not title_val:
-                continue
+        schedule_list.append({
+            "row": row.get("row"),
+            "date": date_val,
+            "time": time_val,
+            "title": title_val,
+            "datetime": sched_dt
+        })
 
-            sched_dt = parse_schedule_datetime(date_val, time_val)
-
-            schedule_list.append({
-                "row": row_idx,
-                "date": date_val,
-                "time": time_val,
-                "title": title_val,
-                "datetime": sched_dt
-            })
-
-    print(f"[Google Sheet] ดึงข้อมูลแถว {start_row} ขึ้นไป สำเร็จ: ทั้งหมด {len(schedule_list)} รายการ\n")
+    print(f"[Apps Script API] ดึงข้อมูลสำเร็จ: ทั้งหมด {len(schedule_list)} รายการ\n")
     return schedule_list
 
 
@@ -141,14 +130,19 @@ def load_existing_results_from_csv(filename: str) -> Dict[str, Dict[str, str]]:
                     parts = dt_str.split(" ", 1)
                     date_part = parts[0] if len(parts) > 0 else ""
                     time_part = parts[1] if len(parts) > 1 else ""
+                    # CSV เก็บค่า "-" แทนคำว่า NOT FOUND เอาไว้ให้แสดงผล จึงต้องแปลงกลับเป็น
+                    # sentinel "NOT FOUND" ตอนโหลดเข้ามา เพื่อให้ logic retry/resume ทำงานถูกต้อง
+                    fb_val = fb_url if (fb_url and fb_url != NOT_FOUND_DISPLAY) else "NOT FOUND"
+                    yt_val = yt_url if (yt_url and yt_url != NOT_FOUND_DISPLAY) else "NOT FOUND"
+                    x_val = x_url if (x_url and x_url != NOT_FOUND_DISPLAY) else "NOT FOUND"
                     existing[key] = {
                         "date": date_part,
                         "time": time_part,
                         "search_string": search_str,
                         "title": search_str,
-                        "facebook_url": fb_url or "NOT FOUND",
-                        "youtube_url": yt_url or "NOT FOUND",
-                        "x_url": x_url or "NOT FOUND",
+                        "facebook_url": fb_val,
+                        "youtube_url": yt_val,
+                        "x_url": x_val,
                         "fb_attempts": 0,
                         "yt_attempts": 0,
                         "x_attempts": 0
@@ -190,12 +184,15 @@ def save_results_to_csv(results: List[Dict], filename: str) -> str:
                     datetime_str = f"{date_val} {time_val}".strip()
 
                 search_val = r.get("search_string") or r.get("title") or ""
+                fb_val = r.get("facebook_url", "NOT FOUND")
+                yt_val = r.get("youtube_url", "NOT FOUND")
+                x_val = r.get("x_url", "NOT FOUND")
                 writer.writerow({
                     "string ที่ค้นหา": search_val,
                     "วันเวลา": datetime_str,
-                    "facebook url": r.get("facebook_url", "NOT FOUND"),
-                    "youtube url": r.get("youtube_url", "NOT FOUND"),
-                    "x url": r.get("x_url", "NOT FOUND")
+                    "facebook url": fb_val if fb_val != "NOT FOUND" else NOT_FOUND_DISPLAY,
+                    "youtube url": yt_val if yt_val != "NOT FOUND" else NOT_FOUND_DISPLAY,
+                    "x url": x_val if x_val != "NOT FOUND" else NOT_FOUND_DISPLAY
                 })
         print(f"[CSV] อัปเดตและบันทึกผลลัพธ์ลงไฟล์ CSV เรียบร้อยแล้วที่: {filepath}")
     except PermissionError:
@@ -216,17 +213,20 @@ def process_due_schedules(
     page_wait_seconds_x: int,
     master_results: Dict[str, Dict],
     delay_minutes: int,
-    csv_filename: str
+    csv_filename: str,
+    script_api_url: str,
+    script_api_token: Optional[str] = None
 ) -> Tuple[List[Dict], List[Dict]]:
     """
     ตรวจสอบเงื่อนไขเวลาในลักษณะ Sliding Queue:
     - แบ่งรายการตามเวลาออกอากาศ + Delay 4 นาที
     - รายการในอดีต (ถอยไป 1 รายการ): ตรวจสอบเฉพาะรายการล่าสุดที่ถึงเวลา (หน้า Queue ตัวเดียว)
-      แต่ละ platform (Facebook / YouTube / X) มีสถานะ "จบ" ของตัวเองอย่างเป็นอิสระต่อกัน:
-      1. หาก platform นั้นเจอ url แล้ว -> ถือว่าจบ ไม่ค้นหาซ้ำอีก
-      2. หาก platform นั้นค้นหาครบ MAX_ATTEMPTS_PER_PLATFORM ครั้งแล้วไม่พบ -> ถือว่าจบ (ยอมแพ้) ไม่ค้นหาซ้ำอีก
-      3. รายการจะถูก Skip ไปรายการถัดไป ก็ต่อเมื่อทุก platform "จบ" ครบทั้งหมดแล้วเท่านั้น
-         หากยังมี platform ใดที่ยังไม่จบ จะทำการ Crawl ค้นหาต่อเฉพาะ platform ที่ยังไม่จบ
+      เมื่อถึงเวลา (trigger_time) จะประมวลผลรายการนั้นให้ "จบภายในรอบเดียว" ดังนี้:
+      1. ค้นหาทุก platform (Facebook / YouTube / X) 1 ครั้งพร้อมกัน (ครั้งที่ 1)
+      2. เฉพาะ platform ที่ยัง NOT FOUND เท่านั้น จะถูก Refetch หน้าเว็บใหม่และค้นหาซ้ำอีก "ครั้งเดียว"
+         (ครั้งที่ 2) ทันทีในรอบนี้ ส่วน platform ที่เจอแล้วจะไม่ค้นหาซ้ำ
+      3. ไม่ว่าผลลัพธ์ครั้งที่ 2 จะเจอหรือไม่เจอ ก็ถือว่ารายการนี้ "จบ" ทันที (ไม่รอ tick ถัดไป)
+         แล้ว Skip ไปรอรายการถัดไปในผัง
     - รายการในอนาคต (ไปหน้า 1 รายการ): รอเวลาและแสดงเวลานับถอยหลัง
 
     คืนค่า (updated_items, upcoming_items)
@@ -351,8 +351,8 @@ def process_due_schedules(
     for it in due_items_to_search:
         print(f"  - แถว {it['row']}: '{it['title']}' (เวลา {it['date']} {it['time']})")
 
-    # Scrape วิดีโอจาก Facebook, YouTube และ X
-    print("\n--- เริ่มต้น Scrape ข้อมูลจาก Facebook, YouTube และ X ---")
+    # รอบที่ 1: Scrape วิดีโอจาก Facebook, YouTube และ X (เช็คครั้งแรกของรายการที่ถึงเวลา)
+    print("\n--- เริ่มต้น Scrape ข้อมูลจาก Facebook, YouTube และ X (ครั้งที่ 1) ---")
     fb_videos = []
     yt_videos = []
     x_videos = []
@@ -372,9 +372,8 @@ def process_due_schedules(
     except Exception as e:
         print(f"[Warning] เกิดข้อผิดพลาดขณะ Crawl X: {e}")
 
-    updated_items = []
-
-    # นำแต่ละรายการไปค้นหาและ match
+    # เตรียมสถานะการค้นหาของแต่ละรายการที่ถึงเวลา แล้ว match ครั้งที่ 1
+    item_states = []
     for item in due_items_to_search:
         title = item["title"]
         time_str = item["time"]
@@ -391,18 +390,26 @@ def process_due_schedules(
             "yt_attempts": 0,
             "x_attempts": 0
         })
-        fb_link = curr_res.get("facebook_url", "NOT FOUND")
-        yt_link = curr_res.get("youtube_url", "NOT FOUND")
-        x_link = curr_res.get("x_url", "NOT FOUND")
-        fb_attempts = curr_res.get("fb_attempts", 0)
-        yt_attempts = curr_res.get("yt_attempts", 0)
-        x_attempts = curr_res.get("x_attempts", 0)
+        state = {
+            "row_num": row_num,
+            "key": key,
+            "title": title,
+            "time_str": time_str,
+            "date_str": date_str,
+            "sched_dt": sched_dt,
+            "fb_link": curr_res.get("facebook_url", "NOT FOUND"),
+            "yt_link": curr_res.get("youtube_url", "NOT FOUND"),
+            "x_link": curr_res.get("x_url", "NOT FOUND"),
+            "fb_attempts": curr_res.get("fb_attempts", 0),
+            "yt_attempts": curr_res.get("yt_attempts", 0),
+            "x_attempts": curr_res.get("x_attempts", 0),
+        }
+        item_states.append(state)
 
-        print(f"\n[Search] กำลังค้นหารายการ: '{title}' ({date_str} {time_str})")
+        print(f"\n[Search] กำลังค้นหารายการ: '{title}' ({date_str} {time_str}) (ครั้งที่ 1)")
 
-        # ค้นหาบน Facebook หากยังไม่เจอ และยังไม่ครบจำนวนครั้งที่ลองได้
-        if fb_link == "NOT FOUND" and fb_attempts < MAX_ATTEMPTS_PER_PLATFORM:
-            fb_attempts += 1
+        if state["fb_link"] == "NOT FOUND":
+            state["fb_attempts"] += 1
             matched_fb = find_matching_video(
                 videos=fb_videos,
                 program_title=title,
@@ -411,18 +418,15 @@ def process_due_schedules(
                 scheduled_dt=sched_dt
             )
             if matched_fb:
-                fb_link = matched_fb["url"]
-                print(f"  ✅ [FB MATCHED] เจอ Facebook (ครั้งที่ {fb_attempts}): {fb_link}")
+                state["fb_link"] = matched_fb["url"]
+                print(f"  ✅ [FB MATCHED] เจอ Facebook (ครั้งที่ {state['fb_attempts']}): {state['fb_link']}")
             else:
-                print(f"  ❌ [FB NOT FOUND] ไม่พบวิดีโอบน Facebook (ครั้งที่ {fb_attempts}/{MAX_ATTEMPTS_PER_PLATFORM})")
-        elif fb_link != "NOT FOUND":
-            print(f"  ℹ️ [FB ALREADY FOUND] มีลิงก์ Facebook อยู่แล้ว: {fb_link}")
+                print(f"  ❌ [FB NOT FOUND] ไม่พบวิดีโอบน Facebook (ครั้งที่ {state['fb_attempts']}/{MAX_ATTEMPTS_PER_PLATFORM})")
         else:
-            print(f"  🚫 [FB GIVE UP] ค้นหาครบ {fb_attempts} ครั้งแล้ว ไม่พบ Facebook สำหรับรายการนี้")
+            print(f"  ℹ️ [FB ALREADY FOUND] มีลิงก์ Facebook อยู่แล้ว: {state['fb_link']}")
 
-        # ค้นหาบน YouTube หากยังไม่เจอ และยังไม่ครบจำนวนครั้งที่ลองได้
-        if yt_link == "NOT FOUND" and yt_attempts < MAX_ATTEMPTS_PER_PLATFORM:
-            yt_attempts += 1
+        if state["yt_link"] == "NOT FOUND":
+            state["yt_attempts"] += 1
             matched_yt = find_matching_youtube_video(
                 videos=yt_videos,
                 program_title=title,
@@ -431,18 +435,15 @@ def process_due_schedules(
                 scheduled_dt=sched_dt
             )
             if matched_yt:
-                yt_link = matched_yt["url"]
-                print(f"  ✅ [YT MATCHED] เจอ YouTube (ครั้งที่ {yt_attempts}): {yt_link}")
+                state["yt_link"] = matched_yt["url"]
+                print(f"  ✅ [YT MATCHED] เจอ YouTube (ครั้งที่ {state['yt_attempts']}): {state['yt_link']}")
             else:
-                print(f"  ❌ [YT NOT FOUND] ไม่พบวิดีโอบน YouTube (ครั้งที่ {yt_attempts}/{MAX_ATTEMPTS_PER_PLATFORM})")
-        elif yt_link != "NOT FOUND":
-            print(f"  ℹ️ [YT ALREADY FOUND] มีลิงก์ YouTube อยู่แล้ว: {yt_link}")
+                print(f"  ❌ [YT NOT FOUND] ไม่พบวิดีโอบน YouTube (ครั้งที่ {state['yt_attempts']}/{MAX_ATTEMPTS_PER_PLATFORM})")
         else:
-            print(f"  🚫 [YT GIVE UP] ค้นหาครบ {yt_attempts} ครั้งแล้ว ไม่พบ YouTube สำหรับรายการนี้")
+            print(f"  ℹ️ [YT ALREADY FOUND] มีลิงก์ YouTube อยู่แล้ว: {state['yt_link']}")
 
-        # ค้นหาบน X หากยังไม่เจอ และยังไม่ครบจำนวนครั้งที่ลองได้
-        if x_link == "NOT FOUND" and x_attempts < MAX_ATTEMPTS_PER_PLATFORM:
-            x_attempts += 1
+        if state["x_link"] == "NOT FOUND":
+            state["x_attempts"] += 1
             matched_x = find_matching_x_video(
                 videos=x_videos,
                 program_title=title,
@@ -451,16 +452,108 @@ def process_due_schedules(
                 scheduled_dt=sched_dt
             )
             if matched_x:
-                x_link = matched_x["url"]
-                print(f"  ✅ [X MATCHED] เจอ X (ครั้งที่ {x_attempts}): {x_link}")
+                state["x_link"] = matched_x["url"]
+                print(f"  ✅ [X MATCHED] เจอ X (ครั้งที่ {state['x_attempts']}): {state['x_link']}")
             else:
-                print(f"  ❌ [X NOT FOUND] ไม่พบวิดีโอบน X (ครั้งที่ {x_attempts}/{MAX_ATTEMPTS_PER_PLATFORM})")
-        elif x_link != "NOT FOUND":
-            print(f"  ℹ️ [X ALREADY FOUND] มีลิงก์ X อยู่แล้ว: {x_link}")
+                print(f"  ❌ [X NOT FOUND] ไม่พบวิดีโอบน X (ครั้งที่ {state['x_attempts']}/{MAX_ATTEMPTS_PER_PLATFORM})")
         else:
-            print(f"  🚫 [X GIVE UP] ค้นหาครบ {x_attempts} ครั้งแล้ว ไม่พบ X สำหรับรายการนี้")
+            print(f"  ℹ️ [X ALREADY FOUND] มีลิงก์ X อยู่แล้ว: {state['x_link']}")
 
-        # อัปเดต master_results
+    # รอบที่ 2 (รอบสุดท้าย): Refetch หน้าเว็บใหม่ เฉพาะ platform ที่ยัง NOT FOUND เท่านั้น แล้วค้นหาซ้ำอีก "ครั้งเดียว"
+    # ไม่ว่าผลลัพธ์รอบนี้จะเจอหรือไม่เจอ รายการนี้ก็ถือว่าจบทันที ไม่ต้องรอ tick ถัดไปอีก
+    need_fb_retry = any(s["fb_link"] == "NOT FOUND" and s["fb_attempts"] < MAX_ATTEMPTS_PER_PLATFORM for s in item_states)
+    need_yt_retry = any(s["yt_link"] == "NOT FOUND" and s["yt_attempts"] < MAX_ATTEMPTS_PER_PLATFORM for s in item_states)
+    need_x_retry = any(s["x_link"] == "NOT FOUND" and s["x_attempts"] < MAX_ATTEMPTS_PER_PLATFORM for s in item_states)
+
+    if need_fb_retry or need_yt_retry or need_x_retry:
+        retry_platforms = [name for name, need in (("Facebook", need_fb_retry), ("YouTube", need_yt_retry), ("X", need_x_retry)) if need]
+        print(f"\n--- Refetch เฉพาะ platform ที่ยังไม่พบ (ครั้งที่ 2 / ครั้งสุดท้าย): {', '.join(retry_platforms)} ---")
+
+        fb_videos_retry = []
+        yt_videos_retry = []
+        x_videos_retry = []
+
+        if need_fb_retry:
+            try:
+                fb_videos_retry = scrape_live_videos(page_url=facebook_url, max_scrolls=25, load_wait_seconds=page_wait_seconds_fb)
+            except Exception as e:
+                print(f"[Warning] เกิดข้อผิดพลาดขณะ Refetch Facebook: {e}")
+
+        if need_yt_retry:
+            try:
+                yt_videos_retry = scrape_youtube_streams(channel_streams_url=youtube_url, max_scrolls=15, load_wait_seconds=page_wait_seconds_yt)
+            except Exception as e:
+                print(f"[Warning] เกิดข้อผิดพลาดขณะ Refetch YouTube: {e}")
+
+        if need_x_retry:
+            try:
+                x_videos_retry = scrape_x_live_videos(page_url=x_url, max_scrolls=3, load_wait_seconds=page_wait_seconds_x)
+            except Exception as e:
+                print(f"[Warning] เกิดข้อผิดพลาดขณะ Refetch X: {e}")
+
+        for state in item_states:
+            title = state["title"]
+            time_str = state["time_str"]
+            date_str = state["date_str"]
+            sched_dt = state["sched_dt"]
+
+            if need_fb_retry and state["fb_link"] == "NOT FOUND" and state["fb_attempts"] < MAX_ATTEMPTS_PER_PLATFORM:
+                state["fb_attempts"] += 1
+                matched_fb = find_matching_video(
+                    videos=fb_videos_retry,
+                    program_title=title,
+                    broadcast_time=time_str,
+                    broadcast_date=date_str,
+                    scheduled_dt=sched_dt
+                )
+                if matched_fb:
+                    state["fb_link"] = matched_fb["url"]
+                    print(f"  ✅ [FB MATCHED] เจอ Facebook (ครั้งที่ {state['fb_attempts']}): {state['fb_link']} (รายการ '{title}')")
+                else:
+                    print(f"  🚫 [FB GIVE UP] ค้นหาครบ {state['fb_attempts']}/{MAX_ATTEMPTS_PER_PLATFORM} ครั้งแล้ว ไม่พบ Facebook สำหรับรายการ '{title}'")
+
+            if need_yt_retry and state["yt_link"] == "NOT FOUND" and state["yt_attempts"] < MAX_ATTEMPTS_PER_PLATFORM:
+                state["yt_attempts"] += 1
+                matched_yt = find_matching_youtube_video(
+                    videos=yt_videos_retry,
+                    program_title=title,
+                    broadcast_time=time_str,
+                    broadcast_date=date_str,
+                    scheduled_dt=sched_dt
+                )
+                if matched_yt:
+                    state["yt_link"] = matched_yt["url"]
+                    print(f"  ✅ [YT MATCHED] เจอ YouTube (ครั้งที่ {state['yt_attempts']}): {state['yt_link']} (รายการ '{title}')")
+                else:
+                    print(f"  🚫 [YT GIVE UP] ค้นหาครบ {state['yt_attempts']}/{MAX_ATTEMPTS_PER_PLATFORM} ครั้งแล้ว ไม่พบ YouTube สำหรับรายการ '{title}'")
+
+            if need_x_retry and state["x_link"] == "NOT FOUND" and state["x_attempts"] < MAX_ATTEMPTS_PER_PLATFORM:
+                state["x_attempts"] += 1
+                matched_x = find_matching_x_video(
+                    videos=x_videos_retry,
+                    program_title=title,
+                    broadcast_time=time_str,
+                    broadcast_date=date_str,
+                    scheduled_dt=sched_dt
+                )
+                if matched_x:
+                    state["x_link"] = matched_x["url"]
+                    print(f"  ✅ [X MATCHED] เจอ X (ครั้งที่ {state['x_attempts']}): {state['x_link']} (รายการ '{title}')")
+                else:
+                    print(f"  🚫 [X GIVE UP] ค้นหาครบ {state['x_attempts']}/{MAX_ATTEMPTS_PER_PLATFORM} ครั้งแล้ว ไม่พบ X สำหรับรายการ '{title}'")
+
+    # อัปเดต master_results และเขียนผลลัพธ์กลับลง Google Sheet / CSV (รายการถือว่าจบแล้วหลังรอบนี้)
+    updated_items = []
+    for state in item_states:
+        key = state["key"]
+        row_num = state["row_num"]
+        date_str = state["date_str"]
+        time_str = state["time_str"]
+        title = state["title"]
+        fb_link = state["fb_link"]
+        yt_link = state["yt_link"]
+        x_link = state["x_link"]
+
         master_results[key] = {
             "row": row_num,
             "date": date_str,
@@ -470,12 +563,27 @@ def process_due_schedules(
             "facebook_url": fb_link,
             "youtube_url": yt_link,
             "x_url": x_link,
-            "fb_attempts": fb_attempts,
-            "yt_attempts": yt_attempts,
-            "x_attempts": x_attempts,
+            "fb_attempts": state["fb_attempts"],
+            "yt_attempts": state["yt_attempts"],
+            "x_attempts": state["x_attempts"],
             "last_checked": system_now.strftime('%Y-%m-%d %H:%M:%S')
         }
         updated_items.append(master_results[key])
+
+        # เขียนผลลัพธ์ของแถวนี้กลับลง Google Sheet ทันทีผ่าน Apps Script API (K=Facebook, M=YouTube, N=X)
+        # ส่ง date/time/title แนบไปด้วยเพื่อให้ฝั่ง Apps Script ตรวจสอบแถวให้ตรงก่อนเขียนจริง
+        # ป้องกันกรณีชื่อรายการซ้ำกันแต่คนละวัน เช่น "2026-08-09  06:00  ทันข่าว 06.00 น."
+        write_row_result(
+            api_url=script_api_url,
+            row=row_num,
+            date=date_str,
+            time=time_str,
+            title=title,
+            facebook_url=fb_link,
+            youtube_url=yt_link,
+            x_url=x_link,
+            token=script_api_token
+        )
 
     # บันทึกผลลัพธ์ทั้งหมดลง CSV (ดึงข้อมูลแถว ผัง และชื่อรายการจากตาราง Google Sheet เสมอ)
     all_rows_for_csv = []
@@ -498,8 +606,7 @@ def process_due_schedules(
 
 
 def start_live_scheduler(
-    sheet_id: str,
-    gid: str,
+    script_api_url: str,
     facebook_url: str,
     youtube_url: str,
     x_url: str,
@@ -508,18 +615,21 @@ def start_live_scheduler(
     page_wait_seconds_x: int,
     check_interval_seconds: int,
     delay_minutes: int,
-    csv_filename: str
+    csv_filename: str,
+    script_api_token: Optional[str] = None
 ):
     """
     Loop ตรวจสอบสถานะอัตโนมัติ รันทิ้งไว้ต่อเนื่องจนกว่าผู้ใช้จะกด Ctrl + C
-    - ดึงตารางเวลาจาก Google Sheets เพียงครั้งเดียวตอนเริ่มโปรแกรม (ไม่ดึงซ้ำทุกรอบ)
+    - ดึงตารางเวลาจาก Google Apps Script API เพียงครั้งเดียวตอนเริ่มโปรแกรม (ไม่ดึงซ้ำทุกรอบ)
     - ตรวจสอบเวลา System Time เทียบกับตารางเวลาที่โหลดไว้
     - เมื่อเวลาปัจจุบันเกินเวลาออกอากาศ + 4 นาที จะดึงรายการใหม่มา Crawl ค้นหา
     - อัปเดตผลลัพธ์ลง CSV อัตโนมัติแบบ Real-time
+    - อัปเดตผลลัพธ์กลับไปยัง Google Sheet เดิมผ่าน Apps Script API: K=Facebook, M=YouTube, N=X
     """
     print("=" * 80)
     print("🚀 เริ่มต้นระบบ Live Scraper Automate (Continuous Scheduler Mode)")
     print("=" * 80)
+    print(f"• Apps Script API : {script_api_url}")
     print(f"• Facebook Target : {facebook_url}")
     print(f"• YouTube Target  : {youtube_url}")
     print(f"• X Target        : {x_url}")
@@ -532,11 +642,11 @@ def start_live_scheduler(
     loaded_results = load_existing_results_from_csv(csv_filename)
     master_results: Dict[str, Dict] = loaded_results.copy()
 
-    # ดึงตารางจาก Google Sheet เพียงครั้งเดียวตอนเปิดโปรแกรม
+    # ดึงตารางจาก Google Apps Script API เพียงครั้งเดียวตอนเปิดโปรแกรม
     try:
-        schedules: List[Dict] = fetch_sheet_schedule(sheet_id=sheet_id, gid=gid, start_row=6)
+        schedules: List[Dict] = fetch_sheet_schedule(api_url=script_api_url, token=script_api_token)
     except Exception as e:
-        print(f"[Error] ไม่สามารถดึงข้อมูลจาก Google Sheet ได้: {e}")
+        print(f"[Error] ไม่สามารถดึงข้อมูลจาก Google Apps Script API ได้: {e}")
         return
 
     iteration = 0
@@ -558,7 +668,9 @@ def start_live_scheduler(
                 page_wait_seconds_x=page_wait_seconds_x,
                 master_results=master_results,
                 delay_minutes=delay_minutes,
-                csv_filename=csv_filename
+                csv_filename=csv_filename,
+                script_api_url=script_api_url,
+                script_api_token=script_api_token
             )
 
             # สรุปสถานะภาพรวม
@@ -621,8 +733,8 @@ def require_env(key: str) -> str:
 
 
 if __name__ == "__main__":
-    SHEET_ID = require_env("SHEET_ID")
-    GID = require_env("GID")
+    SCRIPT_API_URL = require_env("POST_SCRIPT_API")
+    SCRIPT_API_TOKEN = os.getenv("SCRIPT_API_TOKEN") or None
     CSV_OUTPUT_FILE = require_env("CSV_OUTPUT_FILE")
     CHECK_INTERVAL_SECONDS = int(require_env("CHECK_INTERVAL_SECONDS"))
     DELAY_MINUTES = int(require_env("DELAY_MINUTES"))
@@ -638,8 +750,7 @@ if __name__ == "__main__":
 
     # รันระบบ Scheduler แบบต่อเนื่องจนกว่าจะกด Ctrl + C
     start_live_scheduler(
-        sheet_id=SHEET_ID,
-        gid=GID,
+        script_api_url=SCRIPT_API_URL,
         facebook_url=PAGE_URL_FB,
         youtube_url=PAGE_URL_YT,
         x_url=PAGE_URL_X,
@@ -648,5 +759,6 @@ if __name__ == "__main__":
         page_wait_seconds_x=PAGE_WAIT_SECONDS_X,
         check_interval_seconds=CHECK_INTERVAL_SECONDS,
         delay_minutes=DELAY_MINUTES,
-        csv_filename=CSV_OUTPUT_FILE
+        csv_filename=CSV_OUTPUT_FILE,
+        script_api_token=SCRIPT_API_TOKEN
     )

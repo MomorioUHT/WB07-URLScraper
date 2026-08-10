@@ -6,114 +6,58 @@ from typing import List, Dict, Optional, Tuple
 from urllib.parse import urljoin, urlparse, parse_qs
 
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from webdriver_manager.chrome import ChromeDriverManager
 
-# ตารางชื่อเดือนภาษาไทยแบบย่อ
-THAI_MONTHS_SHORT = {
-    1: "ม.ค.", 2: "ก.พ.", 3: "มี.ค.", 4: "เม.ย.",
-    5: "พ.ค.", 6: "มิ.ย.", 7: "ก.ค.", 8: "ส.ค.",
-    9: "ก.ย.", 10: "ต.ค.", 11: "พ.ย.", 12: "ธ.ค."
-}
-
-THAI_MONTH_TO_INT = {
-    "ม.ค.": 1, "ม.ค": 1,
-    "ก.พ.": 2, "ก.พ": 2,
-    "มี.ค.": 3, "มี.ค": 3,
-    "เม.ย.": 4, "เม.ย": 4,
-    "พ.ค.": 5, "พ.ค": 5,
-    "มิ.ย.": 6, "มิ.ย": 6,
-    "ก.ค.": 7, "ก.ค": 7,
-    "ส.ค.": 8, "ส.ค": 8,
-    "ก.ย.": 9, "ก.ย": 9,
-    "ต.ค.": 10, "ต.ค": 10,
-    "พ.ย.": 11, "พ.ย": 11,
-    "ธ.ค.": 12, "ธ.ค": 12,
-}
+from modules.utilities import (
+    THAI_MONTH_REGEX,
+    create_stealth_chrome_driver,
+    gregorian_year_to_be_short,
+    normalize_title_text,
+    parse_thai_date_match,
+)
 
 COMMON_STOPWORDS = {"ไทยพีบีเอส", "thaipbs", "live", "สด", "น", "recap", "hd", "ช่อง", "หมายเลข3"}
 
 
 def create_driver(headless: bool = True) -> webdriver.Chrome:
     """
-    สร้างและตั้งค่า Selenium Chrome WebDriver พร้อม Stealth Arguments
+    สร้างและตั้งค่า Selenium Chrome WebDriver พร้อม Stealth Arguments (สำหรับ Facebook)
     """
-    chrome_options = Options()
-    if headless:
-        chrome_options.add_argument("--headless=new")
-        
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-notifications")
-    chrome_options.add_argument("--disable-popup-blocking")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--lang=th-TH,th")
-    chrome_options.add_argument("--mute-audio")
-    
-    # ป้องกัน bot detection ของ Facebook
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    # รองรับการใช้ Chrome User Data Directory เพื่อใช้ session ที่ล็อกอินค้างไว้
-    user_data_dir = os.getenv("CHROME_USER_DATA_DIR", "")
-    profile_dir = os.getenv("CHROME_PROFILE_DIR", "")
-    if user_data_dir:
-        chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
-        if profile_dir:
-            chrome_options.add_argument(f"--profile-directory={profile_dir}")
-
-    user_agent = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/125.0.0.0 Safari/537.36"
-    )
-    chrome_options.add_argument(f"user-agent={user_agent}")
-    
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    
-    driver.execute_cdp_cmd(
-        "Page.addScriptToEvaluateOnNewDocument",
-        {
-            "source": """
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            })
-            """
-        }
-    )
-    return driver
+    return create_stealth_chrome_driver(headless=headless)
 
 
-def dismiss_login_popup(driver: webdriver.Chrome):
+def dismiss_login_popup(driver: webdriver.Chrome, debug_screenshot_path: Optional[str] = None):
     """
     ปิด Popup Login Modal และ Dialog บังหน้าจอ
+    หากระบุ debug_screenshot_path จะถ่ายภาพหน้าจอหลังพยายามปิด popup ไว้ให้ตรวจสอบว่า
+    ปิดสำเร็จจริงหรือไม่ (สำหรับ debug กรณีที่ crawler ดึงวิดีโอไม่เจอ)
     """
     try:
-        dialogs = driver.find_elements(By.XPATH, "//div[@role='dialog']")
-        if dialogs:
-            xpaths = [
-                "//div[@role='dialog']//div[@aria-label='Close']", 
-                "//div[@role='dialog']//div[@aria-label='ปิด']", 
-                "//div[@aria-label='Close']", 
-                "//div[@aria-label='ปิด']",
-                "//div[@role='dialog']//*[@role='button']",
-                "//div[@role='banner']//*[@role='button']",
-                "//div[@role='dialog']//i"
-            ]
-            for xpath in xpaths:
-                try:
-                    close_buttons = driver.find_elements(By.XPATH, xpath)
-                    for close_btn in close_buttons:
-                        if close_btn.is_displayed():
-                            driver.execute_script("arguments[0].click();", close_btn)
-                            time.sleep(0.2)
-                            break
-                except Exception:
-                    pass
+        # หมายเหตุ: บาง popup login ของ Facebook ไม่ได้อยู่ใน div[role='dialog']
+        # (เช่น floating close button เดี่ยวๆ ที่มี aria-label='ปิด'/'Close' และ role='button')
+        # จึงต้องค้นหา close button โดยตรงเสมอ ไม่ผูกเงื่อนไขไว้กับการเจอ div[role='dialog'] ก่อน
+        xpaths = [
+            "//div[@role='button' and @aria-label='ปิด']",
+            "//div[@role='button' and @aria-label='Close']",
+            "//div[@role='dialog']//div[@aria-label='Close']",
+            "//div[@role='dialog']//div[@aria-label='ปิด']",
+            "//div[@aria-label='Close']",
+            "//div[@aria-label='ปิด']",
+            "//div[@role='dialog']//*[@role='button']",
+            "//div[@role='banner']//*[@role='button']",
+            "//div[@role='dialog']//i"
+        ]
+        for xpath in xpaths:
+            try:
+                close_buttons = driver.find_elements(By.XPATH, xpath)
+                for close_btn in close_buttons:
+                    if close_btn.is_displayed():
+                        driver.execute_script("arguments[0].click();", close_btn)
+                        time.sleep(0.2)
+                        break
+            except Exception:
+                pass
 
         try:
             driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
@@ -132,6 +76,13 @@ def dismiss_login_popup(driver: webdriver.Chrome):
         driver.execute_script(js_cleanup)
     except Exception:
         pass
+
+    if debug_screenshot_path:
+        try:
+            driver.save_screenshot(debug_screenshot_path)
+            print(f"[Facebook Crawler] บันทึกภาพหน้าจอ Debug หลังปิด Popup ไว้ที่: {debug_screenshot_path}")
+        except Exception as e:
+            print(f"[Warning] ไม่สามารถบันทึกภาพหน้าจอ Debug ได้: {e}")
 
 
 def clean_facebook_url(url: str) -> str:
@@ -169,43 +120,32 @@ def extract_thai_date_from_title(title: str) -> Optional[Tuple[int, int, Optiona
     """
     if not title:
         return None
-        
+
     # ค้นหา patterns วันที่ เช่น (7 ส.ค. 69), (7 ส.ค.69), 7 ส.ค. 69, 7 ส.ค.
-    month_regex = r"(?:ม\.ค\.?|ก\.พ\.?|มี\.ค\.?|เม\.ย\.?|พ\.ค\.?|มิ\.ย\.?|ก\.ค\.?|ส\.ค\.?|ก\.ย\.?|ต\.ค\.?|พ\.ย\.?|ธ\.ค\.?)"
-    pattern = rf"\(?\s*(\d{{1,2}})\s*({month_regex})(?:\s*(\d{{2,4}}))?\s*\)?"
-    
+    pattern = rf"\(?\s*(\d{{1,2}})\s*({THAI_MONTH_REGEX})(?:\s*(\d{{2,4}}))?\s*\)?"
     match = re.search(pattern, title)
-    if match:
-        day_str = match.group(1)
-        month_str = match.group(2).strip()
-        year_str = match.group(3)
-        
-        day = int(day_str)
-        month = THAI_MONTH_TO_INT.get(month_str, 0)
-        year = int(year_str) if year_str else None
-        
-        if month > 0 and 1 <= day <= 31:
-            return (day, month, year)
-            
-    return None
+    return parse_thai_date_match(match)
 
 
-def scrape_live_videos(page_url: str = "https://www.facebook.com/watch/ThaiPBS/", max_scrolls: int = 20, load_wait_seconds: int = 5) -> List[Dict[str, str]]:
+def scrape_live_videos(page_url: str = "https://www.facebook.com/watch/ThaiPBS/", max_scrolls: int = 20, load_wait_seconds: int = 5, debug: bool = False) -> List[Dict[str, str]]:
     """
     Crawl ข้อมูลวิดีโอจากหน้า Facebook Watch Grid
+    หาก debug=True จะถ่ายภาพหน้าจอหลังพยายามปิด popup login ครั้งแรกไว้ที่
+    debug_facebook_after_close.png เพื่อตรวจสอบว่าปิด popup สำเร็จจริงหรือไม่
     """
     driver = create_driver(headless=True)
-    video_dict: Dict[str, Dict[str, str]] = {}
-    
+    video_dict: Dict[str, Dict[str, object]] = {}
+
     try:
         print(f"[Facebook Crawler] กำลังเปิดหน้าเว็บ: {page_url}")
         driver.get(page_url)
-        
+
         # 1. รอให้หน้าเว็บโหลด
         print(f"[Facebook Crawler] รอให้หน้าเว็บโหลดเนื้อหา ({load_wait_seconds} วินาที)...")
         time.sleep(load_wait_seconds)
-        dismiss_login_popup(driver)
-        
+        debug_shot_path = os.path.join(os.getcwd(), "debug_facebook_after_close.png") if debug else None
+        dismiss_login_popup(driver, debug_screenshot_path=debug_shot_path)
+
         # 2. เลื่อนหน้าจอลงเพื่อโหลดวิดีโอใน Grid แบบ Deep Scroll
         for i in range(max_scrolls):
             driver.execute_script("""
@@ -237,7 +177,7 @@ def scrape_live_videos(page_url: str = "https://www.facebook.com/watch/ThaiPBS/"
             for (let a of gridLinks) {
                 let href = a.href;
                 if (href.includes('comment_id')) continue;
-                
+
                 // หา card container ที่เล็กที่สุดของการ์ดนั้นๆ
                 let card = a;
                 let cardText = '';
@@ -249,16 +189,23 @@ def scrape_live_videos(page_url: str = "https://www.facebook.com/watch/ThaiPBS/"
                     }
                     card = card.parentElement;
                 }
-                
+
                 if (!cardText) {
                     let aria = a.getAttribute('aria-label') || '';
                     let aText = a.innerText.replace(/\\n+/g, ' ').trim();
                     cardText = (aria + ' ' + aText).trim();
                 }
-                
+
+                // ตรวจสอบ badge "LIVE" (ป้ายกำลังถ่ายทอดสด) ที่ overlay อยู่บน thumbnail ของวิดีโอ
+                // ใช้เป็น fallback เมื่อ Thai date ใน title ตรวจสอบไม่ผ่าน/ไม่พบ
+                let isLive = Array.from(a.querySelectorAll('span')).some(
+                    s => (s.textContent || '').trim() === 'LIVE'
+                );
+
                 results.push({
                     href: href,
-                    text: cardText
+                    text: cardText,
+                    live: isLive
                 });
             }
             
@@ -277,11 +224,12 @@ def scrape_live_videos(page_url: str = "https://www.facebook.com/watch/ThaiPBS/"
                 
                 raw_text = item.get("text", "").strip()
                 raw_text = re.sub(r"\s+", " ", raw_text)
-                
+                is_live = bool(item.get("live", False))
+
                 # สกัด Video ID เพื่อรวมลิงก์ที่เป็นวิดีโอเดียวกัน (Deduplicate by Video ID)
                 vid_match = re.search(r"/videos/(\d+)", clean_url)
                 canonical_key = vid_match.group(1) if vid_match else clean_url
-                
+
                 if canonical_key in video_dict:
                     current_title = video_dict[canonical_key]["title"]
                     # อัปเดต Title ถ้าเจอข้อความที่ละเอียดกว่า หรือมีคำว่า Live / ชื่อรายการ / วันที่
@@ -289,11 +237,14 @@ def scrape_live_videos(page_url: str = "https://www.facebook.com/watch/ThaiPBS/"
                         video_dict[canonical_key]["title"] = raw_text
                         video_dict[canonical_key]["raw_text"] = raw_text
                         video_dict[canonical_key]["url"] = clean_url
+                    # การ์ดเดียวกันอาจมีหลาย <a> (thumbnail กับ title) รวม LIVE badge ไว้ด้วย OR
+                    video_dict[canonical_key]["is_live"] = video_dict[canonical_key].get("is_live", False) or is_live
                 else:
                     video_dict[canonical_key] = {
                         "title": raw_text,
                         "url": clean_url,
-                        "raw_text": raw_text
+                        "raw_text": raw_text,
+                        "is_live": is_live
                     }
             except Exception:
                 continue
@@ -305,21 +256,25 @@ def scrape_live_videos(page_url: str = "https://www.facebook.com/watch/ThaiPBS/"
         driver.quit()
 
 
-def normalize_title_text(text: str) -> str:
+def _score_title_match(card_text: str, clean_search_title: str, sig_words: List[str]) -> Tuple[bool, int]:
     """
-    ปรับรูปแบบข้อความให้อยู่ในรูปมาตรฐานสำหรับจับคู่ (ตัด space, hashtag, วงเล็บ)
-    เช่น:
-    - 'วันใหม่  ไทยพีบีเอส' -> 'วันใหม่ไทยพีบีเอส'
-    - '#วันใหม่ไทยพีบีเอส'  -> 'วันใหม่ไทยพีบีเอส'
-    - 'ป็อป ดีโคตร (Pop-D’Code)' -> 'ป๊อปดีโคตร'
+    ตรวจสอบว่าชื่อรายการ/keyword ปรากฏอยู่ใน card_text หรือไม่ พร้อมให้คะแนนความมั่นใจ
+    ใช้ร่วมกันทั้งการจับคู่แบบปกติ (เช็ควันที่) และแบบ fallback (เช็ค LIVE badge)
     """
-    if not text:
-        return ""
-    t = text.strip()
-    t = re.sub(r"\(.*?\)", "", t)
-    t = t.replace("็", "๊")
-    t = re.sub(r"[#\s\.\-:_’'\"!]", "", t)
-    return t.lower()
+    norm_card_text = normalize_title_text(card_text)
+
+    if clean_search_title in norm_card_text:
+        return True, 30
+
+    matched_sig = [w for w in sig_words if normalize_title_text(w) in norm_card_text]
+    if len(sig_words) == 1 and matched_sig:
+        return True, 25
+    if len(sig_words) > 1 and len(matched_sig) >= len(sig_words):
+        return True, 25
+    if len(sig_words) > 1 and len(matched_sig) >= max(1, len(sig_words) - 1):
+        return True, 15
+
+    return False, 0
 
 
 def find_matching_video(
@@ -369,21 +324,20 @@ def find_matching_video(
 
     for video in videos:
         card_text = video.get("title", "")
-        norm_card_text = normalize_title_text(card_text)
-        
+
         # 1. ตรวจสอบวันที่ (Strict Date Verification)
         if scheduled_dt:
             sched_day = scheduled_dt.day
             sched_month = scheduled_dt.month
-            sched_year_be = (scheduled_dt.year + 543) % 100  # เช่น 2569 -> 69
-            
+            sched_year_be = gregorian_year_to_be_short(scheduled_dt.year)  # เช่น 2569 -> 69
+
             video_date = extract_thai_date_from_title(card_text)
             if video_date is not None:
                 v_day, v_month, v_year = video_date
                 # หากวัน หรือ เดือนไม่ตรงกัน -> ปฏิเสธทันที (ห้ามดึงข้ามวัน)
                 if v_day != sched_day or v_month != sched_month:
                     continue
-                    
+
                 # หากระบุปีแล้วปีไม่ตรงกัน -> ปฏิเสธ
                 if v_year is not None:
                     v_year_2digit = v_year % 100
@@ -391,36 +345,53 @@ def find_matching_video(
                         continue
 
         # 2. ตรวจสอบชื่อรายการ (Title Matching MUST succeed)
-        title_matched = False
-        title_score = 0
-        
-        if clean_search_title in norm_card_text:
-            title_matched = True
-            title_score = 30
-        else:
-            matched_sig = [w for w in sig_words if normalize_title_text(w) in norm_card_text]
-            if len(sig_words) == 1 and matched_sig:
-                title_matched = True
-                title_score = 25
-            elif len(sig_words) > 1 and len(matched_sig) >= len(sig_words):
-                title_matched = True
-                title_score = 25
-            elif len(sig_words) > 1 and len(matched_sig) >= max(1, len(sig_words) - 1):
-                title_matched = True
-                title_score = 15
-                
+        title_matched, title_score = _score_title_match(card_text, clean_search_title, sig_words)
+
         # หากชื่อรายการไม่ตรงเลย ข้ามไป (ไม่จับคู่มั่ว)
         if not title_matched:
             continue
-            
+
         score = title_score
-        
+
         # 3. ตรวจสอบเวลาออกอากาศ (+10 คะแนน)
         if time_regex and time_regex.search(card_text):
             score += 10
-            
+
         if score > highest_score:
             highest_score = score
             best_match = video
 
-    return best_match
+    if best_match is not None:
+        return best_match
+
+    # 4. Fallback: หาก Thai date ใน title ตรวจสอบไม่ผ่าน/ไม่พบเลย (best_match ยังเป็น None)
+    # ให้ใช้ badge "LIVE" (กำลังถ่ายทอดสดอยู่จริง ณ ขณะนี้) แทนการเช็ควันที่
+    # โดยยังต้องจับคู่ชื่อรายการ/keyword กับ title ให้ผ่านเหมือนเดิม ก่อนจะยืนยันว่าไม่พบจริงๆ
+    if scheduled_dt is not None:
+        fallback_match = None
+        fallback_score = 0
+        for video in videos:
+            if not video.get("is_live", False):
+                continue
+
+            card_text = video.get("title", "")
+            title_matched, title_score = _score_title_match(card_text, clean_search_title, sig_words)
+            if not title_matched:
+                continue
+
+            score = title_score
+            if time_regex and time_regex.search(card_text):
+                score += 10
+
+            if score > fallback_score:
+                fallback_score = score
+                fallback_match = video
+
+        if fallback_match is not None:
+            print(
+                "[Facebook Crawler] ตรวจสอบวันที่ไทยใน title ไม่พบ/ไม่ตรง "
+                "แต่พบวิดีโอที่กำลัง LIVE และชื่อรายการตรงกัน จึงใช้ผลลัพธ์นี้แทน"
+            )
+            return fallback_match
+
+    return None

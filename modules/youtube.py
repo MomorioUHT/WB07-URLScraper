@@ -11,21 +11,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from webdriver_manager.chrome import ChromeDriverManager
 
-# ตารางแปลงชื่อเดือนภาษาไทยเป็นตัวเลข (1-12)
-THAI_MONTH_TO_INT = {
-    "ม.ค.": 1, "ม.ค": 1, "มกราคม": 1,
-    "ก.พ.": 2, "ก.พ": 2, "กุมภาพันธ์": 2,
-    "มี.ค.": 3, "มี.ค": 3, "มีนาคม": 3,
-    "เม.ย.": 4, "เม.ย": 4, "เมษายน": 4,
-    "พ.ค.": 5, "พ.ค": 5, "พฤษภาคม": 5,
-    "มิ.ย.": 6, "มิ.ย": 6, "มิถุนายน": 6,
-    "ก.ค.": 7, "ก.ค": 7, "กรกฎาคม": 7,
-    "ส.ค.": 8, "ส.ค": 8, "สิงหาคม": 8,
-    "ก.ย.": 9, "ก.ย": 9, "กันยายน": 9,
-    "ต.ค.": 10, "ต.ค": 10, "ตุลาคม": 10,
-    "พ.ย.": 11, "พ.ย": 11, "พฤศจิกายน": 11,
-    "ธ.ค.": 12, "ธ.ค": 12, "ธันวาคม": 12,
-}
+from modules.utilities import THAI_MONTH_REGEX, gregorian_year_to_be_short, parse_thai_date_match
 
 COMMON_STOPWORDS = {
     "thaipbs", "ไทยพีบีเอส", "live", "สด", "ถ่ายทอดสด", 
@@ -97,31 +83,14 @@ def extract_thai_date_from_youtube_title(title: str) -> Optional[Tuple[int, int,
     if "|" in title:
         parts = title.split("|")
         target_text = parts[-1].strip()
-        
-    month_regex = r"(?:ม\.ค\.?|ก\.พ\.?|มี\.ค\.?|เม\.ย\.?|พ\.ค\.?|มิ\.ย\.?|ก\.ค\.?|ส\.ค\.?|ก\.ย\.?|ต\.ค\.?|พ\.ย\.?|ธ\.ค\.?)"
-    pattern = rf"(\d{{1,2}})\s*({month_regex})(?:\s*(\d{{2,4}}))?"
-    
+
+    pattern = rf"(\d{{1,2}})\s*({THAI_MONTH_REGEX})(?:\s*(\d{{2,4}}))?"
+
     match = re.search(pattern, target_text)
     if not match and target_text != title:
         match = re.search(pattern, title)
-        
-    if match:
-        day = int(match.group(1))
-        month_str = match.group(2).strip()
-        year_str = match.group(3)
-        
-        month = THAI_MONTH_TO_INT.get(month_str, 0)
-        year = None
-        if year_str:
-            y_int = int(year_str)
-            if y_int > 2500:
-                y_int = y_int % 100
-            year = y_int
-            
-        if month > 0 and 1 <= day <= 31:
-            return (day, month, year)
-            
-    return None
+
+    return parse_thai_date_match(match, normalize_short_year=True)
 
 
 def scrape_youtube_streams(
@@ -254,7 +223,7 @@ def find_matching_youtube_video(
             target_day = scheduled_dt.day
             target_month = scheduled_dt.month
             target_ce_short = scheduled_dt.year % 100
-            target_be_short = (scheduled_dt.year + 543) % 100
+            target_be_short = gregorian_year_to_be_short(scheduled_dt.year)
             
             yt_date = extract_thai_date_from_youtube_title(yt_title)
             if yt_date:

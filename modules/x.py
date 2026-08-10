@@ -1,31 +1,19 @@
-import os
 import re
 import time
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from webdriver_manager.chrome import ChromeDriverManager
 
-# ตารางแปลงชื่อเดือนภาษาไทยเป็นตัวเลข (1-12)
-THAI_MONTH_TO_INT = {
-    "ม.ค.": 1, "ม.ค": 1,
-    "ก.พ.": 2, "ก.พ": 2,
-    "มี.ค.": 3, "มี.ค": 3,
-    "เม.ย.": 4, "เม.ย": 4,
-    "พ.ค.": 5, "พ.ค": 5,
-    "มิ.ย.": 6, "มิ.ย": 6,
-    "ก.ค.": 7, "ก.ค": 7,
-    "ส.ค.": 8, "ส.ค": 8,
-    "ก.ย.": 9, "ก.ย": 9,
-    "ต.ค.": 10, "ต.ค": 10,
-    "พ.ย.": 11, "พ.ย": 11,
-    "ธ.ค.": 12, "ธ.ค": 12,
-}
+from modules.utilities import (
+    THAI_MONTH_REGEX,
+    create_stealth_chrome_driver,
+    gregorian_year_to_be_short,
+    normalize_title_text,
+    parse_thai_date_match,
+)
 
 COMMON_STOPWORDS = {"ไทยพีบีเอส", "thaipbs", "live", "สด", "น", "recap", "hd", "ถ่ายทอดสด"}
 
@@ -34,51 +22,7 @@ def create_driver(headless: bool = True) -> webdriver.Chrome:
     """
     สร้างและตั้งค่า Selenium Chrome WebDriver พร้อม Stealth Arguments (สำหรับ X / Twitter)
     """
-    chrome_options = Options()
-    if headless:
-        chrome_options.add_argument("--headless=new")
-
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-notifications")
-    chrome_options.add_argument("--disable-popup-blocking")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--lang=th-TH,th")
-    chrome_options.add_argument("--mute-audio")
-
-    # ป้องกัน bot detection ของ X
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    # รองรับการใช้ Chrome User Data Directory เพื่อใช้ session ที่ล็อกอินค้างไว้ (X มักบล็อกเนื้อหาถ้าไม่ได้ล็อกอิน)
-    user_data_dir = os.getenv("CHROME_USER_DATA_DIR", "")
-    profile_dir = os.getenv("CHROME_PROFILE_DIR", "")
-    if user_data_dir:
-        chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
-        if profile_dir:
-            chrome_options.add_argument(f"--profile-directory={profile_dir}")
-
-    user_agent = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/125.0.0.0 Safari/537.36"
-    )
-    chrome_options.add_argument(f"user-agent={user_agent}")
-
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-
-    driver.execute_cdp_cmd(
-        "Page.addScriptToEvaluateOnNewDocument",
-        {
-            "source": """
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            })
-            """
-        }
-    )
-    return driver
+    return create_stealth_chrome_driver(headless=headless)
 
 
 def dismiss_x_popup(driver: webdriver.Chrome):
@@ -141,24 +85,11 @@ def extract_thai_date_from_title(title: str) -> Optional[Tuple[int, int, Optiona
     if not title:
         return None
 
-    month_regex = r"(?:ม\.ค\.?|ก\.พ\.?|มี\.ค\.?|เม\.ย\.?|พ\.ค\.?|มิ\.ย\.?|ก\.ค\.?|ส\.ค\.?|ก\.ย\.?|ต\.ค\.?|พ\.ย\.?|ธ\.ค\.?)"
-    bracketed_pattern = rf"\(\s*(\d{{1,2}})\s*({month_regex})(?:\s*(\d{{2,4}}))?\s*\)"
-    bare_pattern = rf"(\d{{1,2}})\s*({month_regex})(?:\s*(\d{{2,4}}))?"
+    bracketed_pattern = rf"\(\s*(\d{{1,2}})\s*({THAI_MONTH_REGEX})(?:\s*(\d{{2,4}}))?\s*\)"
+    bare_pattern = rf"(\d{{1,2}})\s*({THAI_MONTH_REGEX})(?:\s*(\d{{2,4}}))?"
 
     match = re.search(bracketed_pattern, title) or re.search(bare_pattern, title)
-    if match:
-        day_str = match.group(1)
-        month_str = match.group(2).strip()
-        year_str = match.group(3)
-
-        day = int(day_str)
-        month = THAI_MONTH_TO_INT.get(month_str, 0)
-        year = int(year_str) if year_str else None
-
-        if month > 0 and 1 <= day <= 31:
-            return (day, month, year)
-
-    return None
+    return parse_thai_date_match(match)
 
 
 def scrape_x_live_videos(page_url: str, max_scrolls: int = 3, load_wait_seconds: int = 5) -> List[Dict[str, str]]:
@@ -246,19 +177,6 @@ def scrape_x_live_videos(page_url: str, max_scrolls: int = 3, load_wait_seconds:
         driver.quit()
 
 
-def normalize_title_text(text: str) -> str:
-    """
-    ปรับรูปแบบข้อความให้อยู่ในรูปมาตรฐานสำหรับจับคู่ (ตัด space, hashtag, วงเล็บ)
-    """
-    if not text:
-        return ""
-    t = text.strip()
-    t = re.sub(r"\(.*?\)", "", t)
-    t = t.replace("็", "๊")
-    t = re.sub(r"[#\s\.\-:_’'\"!]", "", t)
-    return t.lower()
-
-
 def find_matching_x_video(
     videos: List[Dict[str, str]],
     program_title: str,
@@ -298,7 +216,7 @@ def find_matching_x_video(
         v_day, v_month, v_year = post_date
         if v_day != scheduled_dt.day or v_month != scheduled_dt.month:
             return False
-        if v_year is not None and (v_year % 100) != ((scheduled_dt.year + 543) % 100):
+        if v_year is not None and (v_year % 100) != gregorian_year_to_be_short(scheduled_dt.year):
             return False
         return True
 
