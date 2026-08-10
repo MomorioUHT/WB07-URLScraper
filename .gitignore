@@ -2,6 +2,8 @@ __pycache__/
 screenshots/
 
 .env
+claude.md
+.claude/
 
 *.csv
 *.png
