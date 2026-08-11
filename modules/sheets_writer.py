@@ -8,9 +8,10 @@ NOT_FOUND_DISPLAY = "-"
 
 def fetch_schedule_rows(api_url: str, token: Optional[str] = None, timeout: int = 30) -> List[Dict]:
     """
-    ดึงข้อมูลตารางเวลา (A: วันที่, B: เวลา, C: ชื่อรายการ) จาก Google Apps Script Web App
+    ดึงข้อมูลตารางเวลา (A: วันที่, B: เวลา, C: ชื่อรายการ) พร้อมผลลัพธ์ที่เขียนกลับไปแล้ว
+    (K: Facebook, L: Instagram, M: YouTube, N: X) จาก Google Apps Script Web App
     (แทนที่การ export CSV ตรงๆ จาก Google Sheets ด้วย SHEET_ID/GID)
-    คืนค่าเป็น List ของ { row, date, time, title }
+    คืนค่าเป็น List ของ { row, date, time, title, facebook_url, instagram_url, youtube_url, x_url }
     """
     params = {}
     if token:
@@ -40,9 +41,10 @@ def write_row_result(
 ) -> bool:
     """
     เขียนผลลัพธ์ลิงก์ของแถวหนึ่งๆ กลับลง Google Sheet ผ่าน Apps Script Web App:
-    - Facebook -> คอลัมน์ K
-    - YouTube  -> คอลัมน์ M
-    - X        -> คอลัมน์ N
+    - Facebook  -> คอลัมน์ K
+    - Instagram -> คอลัมน์ L (ไม่มีการ crawl จริง เขียน "-" เสมอ เป็น placeholder)
+    - YouTube   -> คอลัมน์ M
+    - X         -> คอลัมน์ N
 
     ส่ง date/time/title แนบไปพร้อมกับ row เสมอ เพื่อให้ฝั่ง Apps Script ตรวจสอบว่าแถวนั้น
     ตรงกับข้อมูลจริงในชีทก่อนเขียน (ป้องกันกรณีชื่อรายการซ้ำกันแต่คนละวัน เช่น
@@ -59,6 +61,7 @@ def write_row_result(
         "time": time,
         "title": title,
         "facebook_url": fb_val,
+        "instagram_url": NOT_FOUND_DISPLAY,
         "youtube_url": yt_val,
         "x_url": x_val,
     }

@@ -1,4 +1,3 @@
-import csv
 import os
 import sys
 import time
@@ -75,8 +74,9 @@ def parse_schedule_datetime(date_str: str, time_str: str) -> Optional[datetime]:
 
 def fetch_sheet_schedule(api_url: str, token: Optional[str] = None) -> List[Dict]:
     """
-    ดึงข้อมูลตารางเวลาและรายการ (A: วันที่, B: เวลา, C: ชื่อรายการ)
-    ผ่าน Google Apps Script Web App (แทนที่การ export CSV ตรงๆ ด้วย SHEET_ID/GID)
+    ดึงข้อมูลตารางเวลาและรายการ (A: วันที่, B: เวลา, C: ชื่อรายการ) พร้อมผลลัพธ์ที่เขียนกลับ
+    ไปแล้ว (K: Facebook, L: Instagram, M: YouTube, N: X) ผ่าน Google Apps Script Web App
+    (แทนที่การ export CSV ตรงๆ ด้วย SHEET_ID/GID)
     """
     print(f"[Apps Script API] กำลังดึงข้อมูลตารางจาก: {api_url}")
 
@@ -99,108 +99,55 @@ def fetch_sheet_schedule(api_url: str, token: Optional[str] = None) -> List[Dict
             "date": date_val,
             "time": time_val,
             "title": title_val,
-            "datetime": sched_dt
+            "datetime": sched_dt,
+            "facebook_url": str(row.get("facebook_url", "")).strip(),
+            "instagram_url": str(row.get("instagram_url", "")).strip(),
+            "youtube_url": str(row.get("youtube_url", "")).strip(),
+            "x_url": str(row.get("x_url", "")).strip()
         })
 
     print(f"[Apps Script API] ดึงข้อมูลสำเร็จ: ทั้งหมด {len(schedule_list)} รายการ\n")
     return schedule_list
 
 
-def load_existing_results_from_csv(filename: str) -> Dict[str, Dict[str, str]]:
+def seed_master_results_from_schedule(schedules: List[Dict]) -> Dict[str, Dict]:
     """
-    อ่านผลลัพธ์เดิมจากไฟล์ CSV (ถ้ามี) เพื่อไม่ต้องค้นหาซ้ำรายการที่เจอแล้ว
-    คืนค่าเป็น Dictionary: { "วันที่_เวลา_ชื่อรายการ": { ... } }
+    Seed master_results จากค่า K,L,M,N ที่ดึงมาจาก Google Sheet โดยตรง (แทนไฟล์ CSV local)
+    รายการหนึ่งๆ จะถูก seed ก็ต่อเมื่อ K,L,M,N มีค่าอยู่แล้วครบทุกช่อง (ไม่ null คือเคยเขียนผล
+    กลับไปแล้ว) และวันเวลาออกอากาศ (A,B) ผ่านไปแล้ว (น้อยกว่า system time) เพื่อไม่ต้องค้นหาซ้ำ
     """
-    existing = {}
-    filepath = os.path.join(os.getcwd(), filename)
-    if not os.path.exists(filepath):
-        return existing
+    master_results: Dict[str, Dict] = {}
+    system_now = datetime.now()
 
-    try:
-        with open(filepath, mode="r", encoding="utf-8-sig") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                search_str = row.get("string ที่ค้นหา", "").strip()
-                dt_str = row.get("วันเวลา", "").strip()
-                fb_url = row.get("facebook url", "").strip()
-                yt_url = row.get("youtube url", "").strip()
-                x_url = row.get("x url", "").strip()
-                if search_str:
-                    key = f"{dt_str}_{search_str}"
-                    parts = dt_str.split(" ", 1)
-                    date_part = parts[0] if len(parts) > 0 else ""
-                    time_part = parts[1] if len(parts) > 1 else ""
-                    # CSV เก็บค่า "-" แทนคำว่า NOT FOUND เอาไว้ให้แสดงผล จึงต้องแปลงกลับเป็น
-                    # sentinel "NOT FOUND" ตอนโหลดเข้ามา เพื่อให้ logic retry/resume ทำงานถูกต้อง
-                    fb_val = fb_url if (fb_url and fb_url != NOT_FOUND_DISPLAY) else "NOT FOUND"
-                    yt_val = yt_url if (yt_url and yt_url != NOT_FOUND_DISPLAY) else "NOT FOUND"
-                    x_val = x_url if (x_url and x_url != NOT_FOUND_DISPLAY) else "NOT FOUND"
-                    existing[key] = {
-                        "date": date_part,
-                        "time": time_part,
-                        "search_string": search_str,
-                        "title": search_str,
-                        "facebook_url": fb_val,
-                        "youtube_url": yt_val,
-                        "x_url": x_val,
-                        "fb_attempts": 0,
-                        "yt_attempts": 0,
-                        "x_attempts": 0
-                    }
-        print(f"[CSV] โหลดผลลัพธ์เดิมจาก {filename} สำเร็จ: พบ {len(existing)} รายการ")
-    except Exception as e:
-        print(f"[Warning] ไม่สามารถอ่านไฟล์ {filename} เดิมได้: {e}")
+    for s in schedules:
+        sched_dt = s.get("datetime")
+        if not sched_dt or sched_dt >= system_now:
+            continue
 
-    return existing
+        fb_raw = s.get("facebook_url", "")
+        ig_raw = s.get("instagram_url", "")
+        yt_raw = s.get("youtube_url", "")
+        x_raw = s.get("x_url", "")
+        if not (fb_raw and ig_raw and yt_raw and x_raw):
+            continue
 
+        key = f"{s['date']} {s['time']}_{s['title']}"
+        master_results[key] = {
+            "row": s["row"],
+            "date": s["date"],
+            "time": s["time"],
+            "search_string": s["title"],
+            "title": s["title"],
+            "facebook_url": fb_raw if fb_raw != NOT_FOUND_DISPLAY else "NOT FOUND",
+            "youtube_url": yt_raw if yt_raw != NOT_FOUND_DISPLAY else "NOT FOUND",
+            "x_url": x_raw if x_raw != NOT_FOUND_DISPLAY else "NOT FOUND",
+            "fb_attempts": 0,
+            "yt_attempts": 0,
+            "x_attempts": 0
+        }
 
-def save_results_to_csv(results: List[Dict], filename: str) -> str:
-    """
-    บันทึกผลลัพธ์ลงไฟล์ CSV มี 5 คอลัมน์:
-    - string ที่ค้นหา
-    - วันเวลา
-    - facebook url
-    - youtube url
-    - x url
-    """
-    fieldnames = [
-        "string ที่ค้นหา",
-        "วันเวลา",
-        "facebook url",
-        "youtube url",
-        "x url"
-    ]
-
-    filepath = os.path.join(os.getcwd(), filename)
-    try:
-        with open(filepath, mode="w", newline="", encoding="utf-8-sig") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            for r in results:
-                date_val = str(r.get('date', '')).strip()
-                time_val = str(r.get('time', '')).strip()
-                datetime_str = r.get('datetime_str', '')
-                if not datetime_str:
-                    datetime_str = f"{date_val} {time_val}".strip()
-
-                search_val = r.get("search_string") or r.get("title") or ""
-                fb_val = r.get("facebook_url", "NOT FOUND")
-                yt_val = r.get("youtube_url", "NOT FOUND")
-                x_val = r.get("x_url", "NOT FOUND")
-                writer.writerow({
-                    "string ที่ค้นหา": search_val,
-                    "วันเวลา": datetime_str,
-                    "facebook url": fb_val if fb_val != "NOT FOUND" else NOT_FOUND_DISPLAY,
-                    "youtube url": yt_val if yt_val != "NOT FOUND" else NOT_FOUND_DISPLAY,
-                    "x url": x_val if x_val != "NOT FOUND" else NOT_FOUND_DISPLAY
-                })
-        print(f"[CSV] อัปเดตและบันทึกผลลัพธ์ลงไฟล์ CSV เรียบร้อยแล้วที่: {filepath}")
-    except PermissionError:
-        print(f"[Warning] ไม่สามารถบันทึก {filename} ได้ เนื่องจากไฟล์ถูกเปิดใช้งานอยู่ (เช่น ใน Microsoft Excel)")
-    except Exception as e:
-        print(f"[Warning] เกิดข้อผิดพลาดในการบันทึก CSV: {e}")
-
-    return filepath
+    print(f"[Google Sheet] Seed รายการที่ประมวลผลจบไปแล้ว: พบ {len(master_results)} รายการ")
+    return master_results
 
 
 def process_due_schedules(
@@ -213,7 +160,6 @@ def process_due_schedules(
     page_wait_seconds_x: int,
     master_results: Dict[str, Dict],
     delay_minutes: int,
-    csv_filename: str,
     script_api_url: str,
     script_api_token: Optional[str] = None
 ) -> Tuple[List[Dict], List[Dict]]:
@@ -542,7 +488,7 @@ def process_due_schedules(
                 else:
                     print(f"  🚫 [X GIVE UP] ค้นหาครบ {state['x_attempts']}/{MAX_ATTEMPTS_PER_PLATFORM} ครั้งแล้ว ไม่พบ X สำหรับรายการ '{title}'")
 
-    # อัปเดต master_results และเขียนผลลัพธ์กลับลง Google Sheet / CSV (รายการถือว่าจบแล้วหลังรอบนี้)
+    # อัปเดต master_results และเขียนผลลัพธ์กลับลง Google Sheet (รายการถือว่าจบแล้วหลังรอบนี้)
     updated_items = []
     for state in item_states:
         key = state["key"]
@@ -585,23 +531,6 @@ def process_due_schedules(
             token=script_api_token
         )
 
-    # บันทึกผลลัพธ์ทั้งหมดลง CSV (ดึงข้อมูลแถว ผัง และชื่อรายการจากตาราง Google Sheet เสมอ)
-    all_rows_for_csv = []
-    for s in schedules:
-        k = f"{s['date']} {s['time']}_{s['title']}"
-        res = master_results.get(k, {})
-        all_rows_for_csv.append({
-            "row": s["row"],
-            "date": s["date"],
-            "time": s["time"],
-            "search_string": s["title"],
-            "title": s["title"],
-            "facebook_url": res.get("facebook_url", "NOT FOUND"),
-            "youtube_url": res.get("youtube_url", "NOT FOUND"),
-            "x_url": res.get("x_url", "NOT FOUND")
-        })
-
-    save_results_to_csv(all_rows_for_csv, filename=csv_filename)
     return updated_items, upcoming_items
 
 
@@ -615,7 +544,6 @@ def start_live_scheduler(
     page_wait_seconds_x: int,
     check_interval_seconds: int,
     delay_minutes: int,
-    csv_filename: str,
     script_api_token: Optional[str] = None
 ):
     """
@@ -623,8 +551,8 @@ def start_live_scheduler(
     - ดึงตารางเวลาจาก Google Apps Script API เพียงครั้งเดียวตอนเริ่มโปรแกรม (ไม่ดึงซ้ำทุกรอบ)
     - ตรวจสอบเวลา System Time เทียบกับตารางเวลาที่โหลดไว้
     - เมื่อเวลาปัจจุบันเกินเวลาออกอากาศ + 4 นาที จะดึงรายการใหม่มา Crawl ค้นหา
-    - อัปเดตผลลัพธ์ลง CSV อัตโนมัติแบบ Real-time
-    - อัปเดตผลลัพธ์กลับไปยัง Google Sheet เดิมผ่าน Apps Script API: K=Facebook, M=YouTube, N=X
+    - อัปเดตผลลัพธ์กลับไปยัง Google Sheet เดิมผ่าน Apps Script API แบบ Real-time: K=Facebook, L=Instagram, M=YouTube, N=X
+    - Google Sheet คือแหล่งข้อมูลเดียว (source of truth) ไม่มีการใช้ไฟล์ CSV local อีกต่อไป
     """
     print("=" * 80)
     print("🚀 เริ่มต้นระบบ Live Scraper Automate (Continuous Scheduler Mode)")
@@ -635,19 +563,17 @@ def start_live_scheduler(
     print(f"• X Target        : {x_url}")
     print(f"• Check Interval  : ทุกๆ {check_interval_seconds} วินาที")
     print(f"• Stream Delay    : {delay_minutes} นาที (เผื่อเวลาให้ทีม Live ขึ้นสตรีมสด)")
-    print(f"• CSV Output File : {csv_filename}")
     print("• กด Ctrl + C ได้ทุกเมื่อเพื่อหยุดการทำงานอย่างปลอดภัย\n")
 
-    # โหลดผลลัพธ์เดิมจาก CSV
-    loaded_results = load_existing_results_from_csv(csv_filename)
-    master_results: Dict[str, Dict] = loaded_results.copy()
-
-    # ดึงตารางจาก Google Apps Script API เพียงครั้งเดียวตอนเปิดโปรแกรม
+    # ดึงตารางจาก Google Apps Script API เพียงครั้งเดียวตอนเปิดโปรแกรม (พร้อมค่า K,L,M,N ที่เขียนกลับไปแล้ว)
     try:
         schedules: List[Dict] = fetch_sheet_schedule(api_url=script_api_url, token=script_api_token)
     except Exception as e:
         print(f"[Error] ไม่สามารถดึงข้อมูลจาก Google Apps Script API ได้: {e}")
         return
+
+    # Seed รายการที่ประมวลผลจบไปแล้วจากค่า K,L,M,N ในชีทโดยตรง (แทนไฟล์ CSV local)
+    master_results: Dict[str, Dict] = seed_master_results_from_schedule(schedules)
 
     iteration = 0
 
@@ -668,7 +594,6 @@ def start_live_scheduler(
                 page_wait_seconds_x=page_wait_seconds_x,
                 master_results=master_results,
                 delay_minutes=delay_minutes,
-                csv_filename=csv_filename,
                 script_api_url=script_api_url,
                 script_api_token=script_api_token
             )
@@ -717,7 +642,7 @@ def start_live_scheduler(
     except KeyboardInterrupt:
         print("\n\n" + "="*80)
         print("🛑 ได้รับคำสั่ง Ctrl + C: จบการทำงานของระบบเรียบร้อยแล้ว")
-        print(f"💾 ไฟล์ผลลัพธ์บันทึกอยู่ที่: {os.path.abspath(csv_filename)}")
+        print("💾 ผลลัพธ์ทั้งหมดถูกเขียนกลับลง Google Sheet แบบ Real-time ไว้แล้ว")
         print("="*80 + "\n")
 
 
@@ -735,7 +660,6 @@ def require_env(key: str) -> str:
 if __name__ == "__main__":
     SCRIPT_API_URL = require_env("POST_SCRIPT_API")
     SCRIPT_API_TOKEN = os.getenv("SCRIPT_API_TOKEN") or None
-    CSV_OUTPUT_FILE = require_env("CSV_OUTPUT_FILE")
     CHECK_INTERVAL_SECONDS = int(require_env("CHECK_INTERVAL_SECONDS"))
     DELAY_MINUTES = int(require_env("DELAY_MINUTES"))
 
@@ -759,6 +683,5 @@ if __name__ == "__main__":
         page_wait_seconds_x=PAGE_WAIT_SECONDS_X,
         check_interval_seconds=CHECK_INTERVAL_SECONDS,
         delay_minutes=DELAY_MINUTES,
-        csv_filename=CSV_OUTPUT_FILE,
         script_api_token=SCRIPT_API_TOKEN
     )

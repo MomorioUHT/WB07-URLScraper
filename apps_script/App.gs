@@ -27,6 +27,7 @@ const COL_TITLE = 3;  // C
 
 // คอลัมน์ผลลัพธ์ลิงก์ (เขียนกลับ)
 const COL_FB = 11;    // K
+const COL_IG = 12;    // L (Instagram - ไม่มีการ crawl จริง เขียน "-" เสมอ เป็น placeholder)
 const COL_YT = 13;    // M
 const COL_X = 14;     // N
 
@@ -81,9 +82,12 @@ function jsonOutput_(obj) {
 }
 
 /**
- * GET API - ดึงข้อมูลตาราง (A: วันที่, B: เวลา, C: ชื่อรายการ) ตั้งแต่แถว START_ROW
+ * GET API - ดึงข้อมูลตาราง (A: วันที่, B: เวลา, C: ชื่อรายการ) พร้อมผลลัพธ์ที่เขียนกลับไปแล้ว
+ * (K: Facebook, L: Instagram, M: YouTube, N: X) ตั้งแต่แถว START_ROW
+ * ฝั่ง Python ใช้ K,L,M,N นี้เพื่อ seed รายการที่ประมวลผลจบไปแล้วก่อนหน้า (จาก Google Sheet โดยตรง
+ * แทนไฟล์ CSV local) โดยไม่ต้องค้นหาซ้ำ
  * เรียกใช้: GET {WEB_APP_URL}?token=xxxx
- * Response: { status: "ok", count: N, data: [{ row, date, time, title }, ...] }
+ * Response: { status: "ok", count: N, data: [{ row, date, time, title, facebook_url, instagram_url, youtube_url, x_url }, ...] }
  */
 function doGet(e) {
   try {
@@ -99,7 +103,8 @@ function doGet(e) {
 
     if (lastRow >= START_ROW) {
       const numRows = lastRow - START_ROW + 1;
-      const values = sheet.getRange(START_ROW, COL_DATE, numRows, 3).getValues();
+      // อ่านตั้งแต่ A ถึง N รวดเดียว (COL_DATE=1 ถึง COL_X=14)
+      const values = sheet.getRange(START_ROW, COL_DATE, numRows, COL_X - COL_DATE + 1).getValues();
 
       values.forEach(function (r, idx) {
         const date = formatCellValue_(r[0]);
@@ -113,7 +118,11 @@ function doGet(e) {
           row: START_ROW + idx,
           date: date,
           time: time,
-          title: title
+          title: title,
+          facebook_url: formatCellValue_(r[COL_FB - COL_DATE]),
+          instagram_url: formatCellValue_(r[COL_IG - COL_DATE]),
+          youtube_url: formatCellValue_(r[COL_YT - COL_DATE]),
+          x_url: formatCellValue_(r[COL_X - COL_DATE])
         });
       });
     }
@@ -125,7 +134,7 @@ function doGet(e) {
 }
 
 /**
- * POST API - เขียนผลลัพธ์ลิงก์กลับลงแถวที่ตรงกัน (K=Facebook, M=YouTube, N=X)
+ * POST API - เขียนผลลัพธ์ลิงก์กลับลงแถวที่ตรงกัน (K=Facebook, L=Instagram, M=YouTube, N=X)
  *
  * ก่อนเขียนจริง จะตรวจสอบวันที่ + เวลา + ชื่อรายการ ของแถวที่ระบุก่อนเสมอ (ถ้าส่งมาด้วย)
  * เพื่อป้องกันการเขียนผิดแถว เช่น กรณีชื่อรายการซ้ำกันแต่คนละวัน
@@ -136,7 +145,7 @@ function doGet(e) {
  * เรียกใช้: POST {WEB_APP_URL}
  * Body (แถวเดียว):
  *   { "token": "xxxx", "row": 6, "date": "2026-08-09", "time": "06:00", "title": "ทันข่าว 06.00 น.",
- *     "facebook_url": "...", "youtube_url": "...", "x_url": "..." }
+ *     "facebook_url": "...", "instagram_url": "-", "youtube_url": "...", "x_url": "..." }
  * Body (หลายแถวพร้อมกัน):
  *   { "token": "xxxx", "items": [ { "row": 6, "date": "...", "time": "...", "title": "...", "facebook_url": "..." }, ... ] }
  * Response: { status: "ok", updated: [{ row, status, reason? }, ...] }
@@ -191,6 +200,9 @@ function doPost(e) {
 
       if (item.facebook_url !== undefined) {
         sheet.getRange(row, COL_FB).setValue(item.facebook_url);
+      }
+      if (item.instagram_url !== undefined) {
+        sheet.getRange(row, COL_IG).setValue(item.instagram_url);
       }
       if (item.youtube_url !== undefined) {
         sheet.getRange(row, COL_YT).setValue(item.youtube_url);
