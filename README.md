@@ -16,4 +16,5 @@ solely for portfolio and educational purposes.<br/>
 ## Run the Application Locally (Python3 is needed)
 1. Clone this repository.
 2. Run ```pip install -r requirements.txt```
-3. Run ```python linkcrawler.py``` 
+3. Edit the .env.example as .env
+4. Run ```python linkcrawler.py``` 
