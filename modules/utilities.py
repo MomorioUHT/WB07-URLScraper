@@ -1,11 +1,25 @@
 import os
 import re
+import subprocess
+import sys
+import time
 from typing import Optional, Tuple
 
 from selenium import webdriver
+from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
+
+# รองรับการแสดงผลภาษาไทยบน Windows Terminal ที่ default console codepage ไม่ใช่ UTF-8 (เช่น
+# cp1252/cp874 บางเครื่อง) หากไม่ทำ ทุก print() ที่มีข้อความไทยปนอยู่ในไฟล์นี้และไฟล์ที่ import
+# โมดูลนี้ (facebook.py, youtube.py, x.py, login_facebook.py, logout_facebook.py) จะพังด้วย
+# UnicodeEncodeError ทันทีที่ error จริงเกิดขึ้น กลบข้อความ error ตัวจริงจนไม่เหลือร่องรอยให้ดู
+# (linkcrawler.py มี guard เดียวกันนี้อยู่แล้ว แต่ทำซ้ำที่นี่เพื่อให้ครอบคลุมทุก Entry Point)
+for _stream in (sys.stdout, sys.stderr):
+    if getattr(_stream, "encoding", None) != "utf-8":
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
 
 # ไดเรกทอรีเก็บ Chrome User Profile ที่ล็อกอิน Facebook ค้างไว้ (สร้าง/ล้างข้อมูลผ่าน
 # login_facebook.py / logout_facebook.py ที่ root ของโปรเจกต์) ใช้ร่วมกันทุกโมดูลที่เรียก
@@ -14,6 +28,13 @@ from webdriver_manager.chrome import ChromeDriverManager
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHROME_DATA_DIR = os.path.join(PROJECT_ROOT, "chrome_data")
 FACEBOOK_PROFILE_DIR = os.path.join(CHROME_DATA_DIR, "facebook_profile")
+
+# ไฟล์ Lock ที่ Chrome สร้างไว้ระหว่างใช้ Profile นี้อยู่ (กลไกนี้เป็นของ Linux/Mac เท่านั้น
+# Windows ไม่สร้างไฟล์เหล่านี้ แต่ยังคงลบทิ้งไว้เผื่อรันข้าม OS) หาก Chrome ปิดไม่สนิท (ปิดหน้าต่าง
+# เอง แทนกด Enter ให้ driver.quit() ทำงาน, เครื่องแฮงค์/ไฟดับ) ไฟล์เหล่านี้จะค้างอยู่ และทำให้เปิด
+# Chrome ครั้งถัดไปด้วย user-data-dir เดียวกันไม่ขึ้น (session not created: user data directory
+# is already in use) จึงต้องล้างทิ้งก่อนเปิด driver ทุกครั้ง
+PROFILE_LOCK_FILES = ("SingletonLock", "SingletonCookie", "SingletonSocket")
 
 # ตารางแปลงชื่อเดือนภาษาไทย (แบบย่อและเต็ม) เป็นตัวเลข (1-12)
 # ใช้ร่วมกันระหว่าง facebook.py, youtube.py และ x.py
@@ -89,14 +110,48 @@ def normalize_title_text(text: str) -> str:
     return t.lower()
 
 
-def create_stealth_chrome_driver(headless: bool = True) -> webdriver.Chrome:
+def _kill_orphaned_chrome_processes_windows() -> None:
     """
-    สร้างและตั้งค่า Selenium Chrome WebDriver พร้อม Stealth Arguments
-    (ป้องกัน bot detection) ใช้ร่วมกันสำหรับหน้าเว็บที่ตรวจจับ automation เช่น Facebook, X, YouTube
-    ใช้ Chrome User Data Directory ที่ chrome_data/facebook_profile เสมอ เพื่อคง session ที่
-    ล็อกอิน Facebook ค้างไว้ (สร้างผ่าน login_facebook.py) ให้เห็นวิดีโอ Live ที่ต้องล็อกอิน
-    บัญชี Facebook ก่อนถึงจะดูได้
+    Windows ไม่ใช้ไฟล์ Lock แบบ Linux/Mac (SingletonLock ฯลฯ) แต่ล็อก Profile ด้วย process ที่ยัง
+    เปิดค้างอยู่จริงแทน (เช่น Chrome จากรอบก่อนที่ driver.quit() ไม่ทันทำงาน, Python ถูกปิดกลางคัน)
+    จึงต้องค้นหา chrome.exe/chromedriver.exe ที่ Command Line อ้างอิงถึง FACEBOOK_PROFILE_DIR
+    นี้โดยเฉพาะ (ไม่แตะ Chrome browser ปกติของผู้ใช้ที่เปิดอยู่) แล้วปิดทิ้งก่อนเปิด driver ใหม่
+    เป็น Best Effort ล้วนๆ หากค้นหา/ปิดไม่สำเร็จ (เช่น powershell ใช้งานไม่ได้) จะข้ามไปเงียบๆ
     """
+    ps_script = (
+        "$ErrorActionPreference = 'SilentlyContinue'; "
+        "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe' OR Name='chromedriver.exe'\" | "
+        f"Where-Object {{ $_.CommandLine -like '*{FACEBOOK_PROFILE_DIR}*' }} | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+    )
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            capture_output=True,
+            timeout=15,
+        )
+    except Exception:
+        pass
+
+
+def _clear_stale_profile_locks() -> None:
+    """
+    ล้างสถานะ Chrome Profile ที่อาจค้างจากการปิด Chrome ไม่สนิทในรอบก่อนหน้า ป้องกัน error
+    'user data directory is already in use' ตอนเปิด Chrome ครั้งถัดไปด้วย Profile เดียวกัน
+    """
+    for filename in PROFILE_LOCK_FILES:
+        lock_path = os.path.join(FACEBOOK_PROFILE_DIR, filename)
+        try:
+            if os.path.exists(lock_path):
+                os.remove(lock_path)
+        except OSError:
+            pass
+
+    if os.name == "nt":
+        _kill_orphaned_chrome_processes_windows()
+
+
+def _build_chrome_options(headless: bool) -> Options:
     chrome_options = Options()
     if headless:
         chrome_options.add_argument("--headless=new")
@@ -113,7 +168,6 @@ def create_stealth_chrome_driver(headless: bool = True) -> webdriver.Chrome:
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
 
-    os.makedirs(FACEBOOK_PROFILE_DIR, exist_ok=True)
     chrome_options.add_argument(f"--user-data-dir={FACEBOOK_PROFILE_DIR}")
 
     user_agent = (
@@ -122,18 +176,52 @@ def create_stealth_chrome_driver(headless: bool = True) -> webdriver.Chrome:
         "Chrome/125.0.0.0 Safari/537.36"
     )
     chrome_options.add_argument(f"user-agent={user_agent}")
+    return chrome_options
 
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=chrome_options)
 
-    driver.execute_cdp_cmd(
-        "Page.addScriptToEvaluateOnNewDocument",
-        {
-            "source": """
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            })
-            """
-        }
-    )
-    return driver
+def create_stealth_chrome_driver(headless: bool = True) -> webdriver.Chrome:
+    """
+    สร้างและตั้งค่า Selenium Chrome WebDriver พร้อม Stealth Arguments
+    (ป้องกัน bot detection) ใช้ร่วมกันสำหรับหน้าเว็บที่ตรวจจับ automation เช่น Facebook, X, YouTube
+    ใช้ Chrome User Data Directory ที่ chrome_data/facebook_profile เสมอ เพื่อคง session ที่
+    ล็อกอิน Facebook ค้างไว้ (สร้างผ่าน login_facebook.py) ให้เห็นวิดีโอ Live ที่ต้องล็อกอิน
+    บัญชี Facebook ก่อนถึงจะดูได้
+
+    ไม่ระบุ Service/executable_path เอง แต่ปล่อยให้ Selenium Manager (built-in ตั้งแต่ Selenium
+    4.6 ขึ้นไป) เป็นผู้ดาวน์โหลด/เลือก ChromeDriver ที่ตรงกับเวอร์ชัน Chrome ที่ติดตั้งอยู่บนเครื่อง
+    นั้นๆ ให้อัตโนมัติ แทนที่จะใช้ webdriver-manager ซึ่งบาง cache เวอร์ชันเก่าบนเครื่องอื่นอาจไม่
+    ตรงกับ Chrome ที่ติดตั้งจริง ทำให้เปิด Chrome ไม่ขึ้น
+
+    หากเปิด Chrome ไม่สำเร็จ (เช่น Profile ถูก Lock ค้างจากครั้งก่อน) จะล้าง Lock File แล้วลองใหม่
+    อีก 1 ครั้งก่อนจะโยน Exception ออกไปจริงๆ พร้อม log รายละเอียดให้เห็นสาเหตุชัดเจน
+    """
+    os.makedirs(FACEBOOK_PROFILE_DIR, exist_ok=True)
+
+    max_attempts = 2
+    last_error: Optional[WebDriverException] = None
+
+    for attempt in range(1, max_attempts + 1):
+        if attempt > 1:
+            _clear_stale_profile_locks()
+        try:
+            driver = webdriver.Chrome(options=_build_chrome_options(headless))
+            driver.execute_cdp_cmd(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {
+                    "source": """
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    })
+                    """
+                }
+            )
+            return driver
+        except WebDriverException as e:
+            last_error = e
+            print(f"[Chrome Driver] เปิด Chrome ไม่สำเร็จ (ครั้งที่ {attempt}/{max_attempts}): {e}")
+            if attempt < max_attempts:
+                print("[Chrome Driver] กำลังล้าง Lock File ของ Profile แล้วลองเปิด Chrome ใหม่อีกครั้ง...")
+                time.sleep(2)
+
+    print(f"[Chrome Driver] เปิด Chrome ไม่สำเร็จหลังลองครบ {max_attempts} ครั้งแล้ว ยอมแพ้")
+    raise last_error

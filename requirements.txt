@@ -2,4 +2,3 @@ requests
 pandas
 python-dotenv
 selenium
-webdriver-manager
