@@ -2,9 +2,9 @@
 logout_facebook.py
 -------------------
 Logout บัญชี Facebook ออกจาก Chrome Profile ที่ login_facebook.py สร้างไว้ (Best Effort ผ่านการ
-กดปุ่ม Logout บนหน้าเว็บ) จากนั้นลบไดเรกทอรี chrome_data/facebook_profile ทิ้งทั้งหมด เพื่อล้าง
-Cookies/Session ให้สะอาดจริงๆ (ต้องรัน login_facebook.py ใหม่ก่อนใช้งาน linkcrawler.py อีกครั้ง
-หากรายการไหนต้อง Login บัญชี Facebook ถึงจะเห็น Live Video)
+กดปุ่ม Logout บนหน้าเว็บ) จากนั้นลบไดเรกทอรี Profile (FACEBOOK_PROFILE_DIR ใน modules/utilities.py)
+ทิ้งทั้งหมด เพื่อล้าง Cookies/Session ให้สะอาดจริงๆ (ต้องรัน login_facebook.py ใหม่ก่อนใช้งาน
+linkcrawler.py อีกครั้ง หากรายการไหนต้อง Login บัญชี Facebook ถึงจะเห็น Live Video)
 
 วิธีใช้: python logout_facebook.py
 """

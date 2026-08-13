@@ -22,11 +22,22 @@ for _stream in (sys.stdout, sys.stderr):
             pass
 
 # ไดเรกทอรีเก็บ Chrome User Profile ที่ล็อกอิน Facebook ค้างไว้ (สร้าง/ล้างข้อมูลผ่าน
-# login_facebook.py / logout_facebook.py ที่ root ของโปรเจกต์) ใช้ร่วมกันทุกโมดูลที่เรียก
+# login_facebook.py / logout_facebook.py) ใช้ร่วมกันทุกโมดูลที่เรียก
 # create_stealth_chrome_driver() (facebook.py, x.py, youtube.py) เพื่อให้เห็นวิดีโอ Live ที่
 # ต้องล็อกอินบัญชี Facebook ก่อนถึงจะดูได้
+#
+# ตั้งใจเก็บไว้นอกโฟลเดอร์โปรเจกต์ (เช่น %LOCALAPPDATA%\LinkScraperAutomate บน Windows) แทนที่จะ
+# เก็บไว้ใต้ตัวโปรเจกต์เอง เพราะโปรเจกต์นี้มักถูก clone ไว้ใต้ Desktop\...\WB-07-LinkScraperAutomate
+# ซึ่ง path ยาวอยู่แล้ว โดยเฉพาะเครื่องที่ Desktop ถูก OneDrive sync ไว้ (เติม
+# "OneDrive - ชื่อบริษัท\Desktop\" นำหน้า) ทำให้ path เต็มของไฟล์ลึกๆที่ Chrome สร้างขึ้นเอง เช่น
+# Default\Service Worker\CacheStorage\<hash>\... ทะลุขีดจำกัด Windows MAX_PATH (260 ตัวอักษร)
+# แล้วเปิด Chrome ไม่ขึ้นด้วย error "session not created: from unknown error: failed to write
+# prefs file" (พังเฉพาะบางเครื่องที่ path ยาวเกิน แม้โค้ดจะเหมือนกันทุกเครื่องก็ตาม)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CHROME_DATA_DIR = os.path.join(PROJECT_ROOT, "chrome_data")
+CHROME_DATA_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or PROJECT_ROOT,
+    "LinkScraperAutomate",
+)
 FACEBOOK_PROFILE_DIR = os.path.join(CHROME_DATA_DIR, "facebook_profile")
 
 # ไฟล์ Lock ที่ Chrome สร้างไว้ระหว่างใช้ Profile นี้อยู่ (กลไกนี้เป็นของ Linux/Mac เท่านั้น

@@ -1,7 +1,8 @@
 """
 login_facebook.py
 ------------------
-เปิด Chrome แบบเห็นหน้าจอ (ไม่ headless) โดยใช้ Chrome Profile ที่ chrome_data/facebook_profile
+เปิด Chrome แบบเห็นหน้าจอ (ไม่ headless) โดยใช้ Chrome Profile ที่ FACEBOOK_PROFILE_DIR
+(modules/utilities.py, ปกติคือ %LOCALAPPDATA%\LinkScraperAutomate\facebook_profile บน Windows)
 ให้ผู้ใช้ Login เข้าบัญชี Facebook ด้วยตนเอง เมื่อ Login สำเร็จแล้ว Chrome จะบันทึก Session/Cookies
 ลงในโปรไฟล์นี้อัตโนมัติ ทำให้ linkcrawler.py (ผ่าน modules/facebook.py, youtube.py, x.py ที่ใช้
 create_stealth_chrome_driver() ร่วมกัน) เห็น Live Video ที่ต้อง Login บัญชี Facebook ก่อนถึงจะดูได้
