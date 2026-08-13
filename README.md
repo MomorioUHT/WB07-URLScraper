@@ -17,4 +17,5 @@ solely for portfolio and educational purposes.<br/>
 1. Clone this repository.
 2. Run ```pip install -r requirements.txt```
 3. Edit the .env.example as .env
-4. Run ```python linkcrawler.py``` 
+4. (Optional, needed only for Facebook lives that require a logged-in account to view) Run ```python login_facebook.py``` and log in to Facebook in the Chrome window that opens. The session is saved under `chrome_data/facebook_profile/` and reused automatically by `linkcrawler.py`. Run ```python logout_facebook.py``` to log out and wipe that saved profile.
+5. Run ```python linkcrawler.py``` 

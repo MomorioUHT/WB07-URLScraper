@@ -7,6 +7,14 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
+# ไดเรกทอรีเก็บ Chrome User Profile ที่ล็อกอิน Facebook ค้างไว้ (สร้าง/ล้างข้อมูลผ่าน
+# login_facebook.py / logout_facebook.py ที่ root ของโปรเจกต์) ใช้ร่วมกันทุกโมดูลที่เรียก
+# create_stealth_chrome_driver() (facebook.py, x.py, youtube.py) เพื่อให้เห็นวิดีโอ Live ที่
+# ต้องล็อกอินบัญชี Facebook ก่อนถึงจะดูได้
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CHROME_DATA_DIR = os.path.join(PROJECT_ROOT, "chrome_data")
+FACEBOOK_PROFILE_DIR = os.path.join(CHROME_DATA_DIR, "facebook_profile")
+
 # ตารางแปลงชื่อเดือนภาษาไทย (แบบย่อและเต็ม) เป็นตัวเลข (1-12)
 # ใช้ร่วมกันระหว่าง facebook.py, youtube.py และ x.py
 THAI_MONTH_TO_INT = {
@@ -84,9 +92,10 @@ def normalize_title_text(text: str) -> str:
 def create_stealth_chrome_driver(headless: bool = True) -> webdriver.Chrome:
     """
     สร้างและตั้งค่า Selenium Chrome WebDriver พร้อม Stealth Arguments
-    (ป้องกัน bot detection) ใช้ร่วมกันสำหรับหน้าเว็บที่ตรวจจับ automation เช่น Facebook, X
-    รองรับการใช้ Chrome User Data Directory เพื่อใช้ session ที่ล็อกอินค้างไว้ ผ่าน
-    CHROME_USER_DATA_DIR / CHROME_PROFILE_DIR ใน .env
+    (ป้องกัน bot detection) ใช้ร่วมกันสำหรับหน้าเว็บที่ตรวจจับ automation เช่น Facebook, X, YouTube
+    ใช้ Chrome User Data Directory ที่ chrome_data/facebook_profile เสมอ เพื่อคง session ที่
+    ล็อกอิน Facebook ค้างไว้ (สร้างผ่าน login_facebook.py) ให้เห็นวิดีโอ Live ที่ต้องล็อกอิน
+    บัญชี Facebook ก่อนถึงจะดูได้
     """
     chrome_options = Options()
     if headless:
@@ -104,12 +113,8 @@ def create_stealth_chrome_driver(headless: bool = True) -> webdriver.Chrome:
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
 
-    user_data_dir = os.getenv("CHROME_USER_DATA_DIR", "")
-    profile_dir = os.getenv("CHROME_PROFILE_DIR", "")
-    if user_data_dir:
-        chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
-        if profile_dir:
-            chrome_options.add_argument(f"--profile-directory={profile_dir}")
+    os.makedirs(FACEBOOK_PROFILE_DIR, exist_ok=True)
+    chrome_options.add_argument(f"--user-data-dir={FACEBOOK_PROFILE_DIR}")
 
     user_agent = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

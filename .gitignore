@@ -1,5 +1,6 @@
 __pycache__/
 screenshots/
+chrome_data/
 
 .env
 claude.md

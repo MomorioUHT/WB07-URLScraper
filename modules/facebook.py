@@ -250,8 +250,18 @@ def scrape_live_videos(page_url: str = "https://www.facebook.com/watch/ThaiPBS/"
                 continue
 
         videos = list(video_dict.values())
+
+        # --- DEBUG: ถ่ายภาพหน้าจอหลัง Scrape เสร็จแล้ว เพื่อยืนยันว่า Chrome ใช้บัญชี Facebook ---
+        # --- ที่ Login ค้างไว้ใน chrome_data/facebook_profile จริง (ลบ/comment ทิ้งหลัง Debug เสร็จ) ---
+        # debug_screenshot_dir = os.path.join(os.getcwd(), "screenshots")
+        # os.makedirs(debug_screenshot_dir, exist_ok=True)
+        # debug_screenshot_path = os.path.join(debug_screenshot_dir, "debug_facebook_after_scrape.png")
+        # driver.save_screenshot(debug_screenshot_path)
+        # print(f"[Facebook Crawler] [DEBUG] บันทึกภาพหน้าจอหลัง Scrape ไว้ที่: {debug_screenshot_path}")
+        # --- END DEBUG ---
+
         return videos
-        
+
     finally:
         driver.quit()
 

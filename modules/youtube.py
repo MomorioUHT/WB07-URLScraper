@@ -6,15 +6,17 @@ from typing import List, Dict, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
 
-from modules.utilities import THAI_MONTH_REGEX, gregorian_year_to_be_short, parse_thai_date_match
+from modules.utilities import (
+    THAI_MONTH_REGEX,
+    create_stealth_chrome_driver,
+    gregorian_year_to_be_short,
+    parse_thai_date_match,
+)
 
 COMMON_STOPWORDS = {
-    "thaipbs", "ไทยพีบีเอส", "live", "สด", "ถ่ายทอดสด", 
+    "thaipbs", "ไทยพีบีเอส", "live", "สด", "ถ่ายทอดสด",
     "recap", "daily", "ตอนที่", "ep", "hd"
 }
 
@@ -22,21 +24,9 @@ COMMON_STOPWORDS = {
 def create_driver(headless: bool = True) -> webdriver.Chrome:
     """
     สร้างและตั้งค่า Selenium WebDriver (Chrome) สำหรับ YouTube
+    ใช้ Chrome Profile เดียวกับ Facebook/X (chrome_data/facebook_profile) เพื่อความสอดคล้องกัน
     """
-    chrome_options = Options()
-    if headless:
-        chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--disable-notifications")
-    chrome_options.add_argument("--mute-audio")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-    chrome_options.add_argument("--lang=th-TH,th")
-    
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=chrome_options)
+    driver = create_stealth_chrome_driver(headless=headless)
     driver.set_page_load_timeout(45)
     return driver
 
